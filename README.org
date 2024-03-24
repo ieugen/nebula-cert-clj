@@ -1,0 +1,30 @@
+#+TITLE: Nebula certificate management
+
+
+** Install protojure
+
+To generate certificates we need protocol buffers.
+
+There is an issue with protojure serialization: https://github.com/protojure/lib/issues/164
+Use java protocol buffers.
+
+See https://protojure.readthedocs.io/en/latest/protobufs/#getting-started
+
+
+- Install [[https://github.com/protojure/protoc-plugin/releases/download/v2.1.2/protoc-gen-clojure][protojure]]
+- Generate clojure from .proto file
+
+#+BEGIN_SRC shel
+# Download plugin to generate clojure code from proto files
+curl -L  https://github.com/protojure/protoc-plugin/releases/download/v2.1.2/protoc-gen-clojure --output protoc-gen-clojure
+
+chmod +x protoc-gen-clojure
+
+mkdir -p generated/clj
+# Generate clojure code from protocol buffers
+protoc --clojure_out=generated/clj src/proto/cert.proto
+# Use java protocol buffers. Compile classes after.
+mkdir -p generated/java
+protoc --java_out=generated/java src/proto/cert.proto
+
+#+END_SRC
