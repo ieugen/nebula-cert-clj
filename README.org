@@ -1,12 +1,56 @@
 #+TITLE: Nebula certificate management
 
+A port of [[https://github.com/slackhq/nebula/][nebula-certs]] code to Clojure.
+Allows users to generate nebula certs, sign, verify etc.
+
+Useful as a Clojure library and as a CLI tool.
+
+* Usage as a CLI
+
+nebula-cert-clj can be used as a command line tool.
+
+It tries to follow the same syntax as original nebula-cert .
+
+Still work in progress
+
+#+BEGIN_SRC shell
+
+# Call without options to view usage
+clojure -M -m ieugen.nebula.cli
+Usage: nebula-cert-clj [-V | -version] [-h | --help] [ca | keygen | sign | pring | verify] [<args>...]
+
+A port of nebula-certs to clojure.
+
+  -V,          Prints the version
+  -h, --help   Prints this help message
+
+  ca       Create a self signed certificate authority
+  keygen   Create a public/private key pair.
+  sign     Create and sign a certificate.
+  pring    Print details about a certificate
+  verify   Verifies a certificate isn't expired and was signed by a trusted authority.
+
+#+END_SRC
+* Usage as a library
+
+#+BEGIN_SRC clojure
+{io.github.ieugen/nebula-cert-clj {:git/url "https://github.com/ieugen/nebula-cert-clj.git"
+                                   :git/sha "fill commit id here"}}
+#+END_SRC
+
+
+* Develop nebula-certs-clj
 
 ** Install protojure
 
 To generate certificates we need protocol buffers.
 
 There is an issue with protojure serialization: https://github.com/protojure/lib/issues/164
-Use java protocol buffers.
+Use java protocol buffers for serialization.
+Using protojure is very nice to work with so will use protojure for all work except serialization.
+To handle serialization we will serialize with protojure and then read and write with java protocol
+buffers implementation.
+This will be required until protojure can write packed repeated fields properly.
 
 See https://protojure.readthedocs.io/en/latest/protobufs/#getting-started
 
@@ -28,3 +72,48 @@ mkdir -p generated/java
 protoc --java_out=generated/java src/proto/cert.proto
 
 #+END_SRC
+
+
+** Using slack nebula-cert binary
+
+Some useful commands on using nebula-cert:
+
+#+BEGIN_SRC
+
+cd sample-certs
+
+# Generate sample certificate authority
+nebula-cert ca -name "Sample-CA01" -ips 100.100.0.0/24,100.90.0.0/24,100.99.0.0/24 \
+    -groups group-a,group-b -subnets 100.90.0.0/24,100.99.0.0/24 \
+    -out-crt sample-ca01.crt \
+    -out-key sample-ca01.key
+
+# Generate a key pair for users
+nebula-cert keygen -out-key sample-cert-01.key -out-pub sample-cert-01.pub
+nebula-cert keygen -out-key ecdh-25519-01.key -out-pub ecdh-25519-01.pub
+nebula-cert keygen -curve P256 -out-key ecdh-p256-01.key -out-pub ecdh-p256-01.pub
+
+
+# Sign certificate
+nebula-cert sign -ca-crt /ne \
+    -ca-key sample-certs/sample-ca01.key \
+    -name ieugen -in-pub ed25519-pair.pub \
+    -out-crt ed25519-pair.crt \
+    -ip 100.100.0.1/24
+
+
+
+
+# Print certificate details
+nebula-cert print -path sample-ca01.crt -json
+
+# Verify certificate
+nebula-cert verify -ca sample-ca01.crt -crt sample-cert-01.crt
+
+#+END_SRC
+
+
+* References
+
+- [[https://github.com/bcgit/bc-java/issues/251#issuecomment-347746855][Use X25519 class to generate ECDH X25519 keys]]
+- https://github.com/bcgit/bc-java/blob/main/core/src/test/java/org/bouncycastle/math/ec/rfc7748/test/X25519Test.java#L40

@@ -5,6 +5,7 @@
          "target/generated/classes"]
  :deps {babashka/fs {:mvn/version "0.5.20"}
         babashka/process {:mvn/version "0.5.22"}
+        com.lambdaisland/cli {:mvn/version "0.7.33"}
         io.github.rwstauner/which-clj {:git/url "https://github.com/rwstauner/which-clj.git"
                                        :git/sha "5d467f2f8aab844d4508e1066ad6714a0fab8cc6"}
         com.github.seancfoley/ipaddress {:mvn/version "5.5.0"}
@@ -14,6 +15,7 @@
         metosin/jsonista {:mvn/version "0.3.8"}
         metosin/malli {:mvn/version "0.15.0"}
         org.bouncycastle/bcpkix-jdk18on {:mvn/version "1.77"}
+        org.bouncycastle/bcprov-jdk18on {:mvn/version "1.77"}
         org.clj-commons/byte-streams {:mvn/version "0.3.4"}
         org.clojure/clojure {:mvn/version "1.11.2"}
         org.clojure/tools.logging {:mvn/version "1.3.0"}

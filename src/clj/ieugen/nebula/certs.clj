@@ -1,21 +1,43 @@
 (ns ieugen.nebula.certs
   (:require [clojure.java.io :as io]
+            [ieugen.nebula.generated.cert :as cert]
             [malli.core :as m]
             [malli.error :as me]
             [malli.generator :as mg]
-            [ieugen.nebula.generated.cert :as cert]
             [protojure.protobuf :as protojure])
   (:import (com.google.protobuf ByteString)
+           (ieugen.nebula.generated.cert Cert$RawNebulaCertificate Cert$RawNebulaCertificateDetails)
            (inet.ipaddr.ipv4 IPv4Address)
+           (java.security SecureRandom Security)
            (java.time Instant)
            (java.util HexFormat)
-           (ieugen.nebula.generated.cert Cert$RawNebulaCertificate Cert$RawNebulaCertificateDetails)
            (org.bouncycastle.crypto Signer)
-           (org.bouncycastle.crypto.params Ed25519PrivateKeyParameters Ed25519PublicKeyParameters)
+           (org.bouncycastle.crypto AsymmetricCipherKeyPair)
+           (org.bouncycastle.crypto.generators ECKeyPairGenerator Ed25519KeyPairGenerator)
+           (org.bouncycastle.crypto.params
+            ECDomainParameters
+            ECKeyGenerationParameters
+            ECPrivateKeyParameters
+            ECPublicKeyParameters
+            Ed25519KeyGenerationParameters
+            Ed25519PrivateKeyParameters
+            Ed25519PublicKeyParameters)
            (org.bouncycastle.crypto.signers Ed25519Signer)
+           (org.bouncycastle.jce ECNamedCurveTable)
+           (org.bouncycastle.jce.provider BouncyCastleProvider)
+           (org.bouncycastle.math.ec.rfc7748 X25519)
            (org.bouncycastle.util.io.pem PemObject PemReader PemWriter)))
 
 (set! *warn-on-reflection* true)
+
+(Security/addProvider (BouncyCastleProvider.))
+
+(defn security-providers
+  "Get security providers registered with the JVM."
+  []
+  (Security/getProviders))
+
+(def secure-random-gen (SecureRandom.))
 
 ;; https://github.com/slackhq/nebula/blob/master/cert/cert.go#L29
 
@@ -44,8 +66,6 @@
   [^PemObject pem file]
   (with-open [pw (PemWriter. (io/writer file))]
     (.writeObject pw pem)))
-
-(defmulti unmarshal (fn [^PemObject pem] (.getType pem)))
 
 (def RawNebulaCertificateDetails-spec
   "Malli spec for RawNebulaCertificateDetails"
@@ -102,6 +122,8 @@
    (let [net-prefix (ip-bit-mask->cidr-bits cidr)]
      (IPv4Address. ip net-prefix))))
 
+(defmulti unmarshal (fn [^PemObject pem] (.getType pem)))
+
 (defmethod unmarshal "NEBULA CERTIFICATE"
   ([^PemObject pem]
    (let [raw-cert (Cert$RawNebulaCertificate/parseFrom (.getContent pem))
@@ -112,12 +134,198 @@
   ([^PemObject pem]
    (let [raw ()])))
 
-(defn file->bytes [file]
+(defn file->bytes
+  [file]
   (with-open [xin (io/input-stream file)
               xout (java.io.ByteArrayOutputStream.)]
     (io/copy xin xout)
     (.toByteArray xout)))
 
+(defn bytes->file
+  [file ^bytes bytes]
+  (with-open [f (io/output-stream file)]
+    (.write f bytes)))
+
+(defn cert-details->bytes
+  "Convert protojure a RawNebulaCertificateDetails map to bytes.
+  Uses double serializations since protojure has a serialization bug with
+  https://github.com/protojure/lib/issues/164
+  Once it's fixed we can use only protojure."
+  [details]
+  (let [d-bytes ^bytes (protojure/->pb details)
+        cert2 (Cert$RawNebulaCertificateDetails/parseFrom d-bytes)
+        d-bytes2 (.toByteArray cert2)]
+    d-bytes2))
+
+(defn ec-named-curves-seq
+  "Return a sequence of EC curves."
+  []
+  (enumeration-seq (ECNamedCurveTable/getNames)))
+
+(defmulti keygen
+  "Implement keygeneration for supported key-pair types.
+   Expects a map with a key named :key-type"
+  (fn [opts] (:key-type opts)))
+
+(defmethod keygen :ed25519
+  [opts]
+  (let [key-type (:key-type opts)
+        kpg (doto (Ed25519KeyPairGenerator.)
+              (.init (Ed25519KeyGenerationParameters. secure-random-gen)))
+        kp ^AsymmetricCipherKeyPair (.generateKeyPair kpg)
+        private-key ^Ed25519PrivateKeyParameters (.getPrivate kp)
+        public-key ^Ed25519PublicKeyParameters (.getPublic kp)]
+    {:key-type key-type
+     :public-key (.getEncoded public-key)
+     :private-key (.getEncoded private-key)}))
+
+(defmethod keygen :X25519
+  [opts]
+  ;; Generate EHDH X25519
+  ;;
+  ;; https://github.com/bcgit/bc-java/issues/251#issuecomment-347746855
+  ;; Use X25519 class to generate ECDH X25519 keys
+  ;; https://github.com/bcgit/bc-java/blob/main/core/src/test/java/org/bouncycastle/math/ec/rfc7748/test/X25519Test.java#L40
+  (let [key-type (:key-type opts)
+        private-key (byte-array X25519/SCALAR_SIZE)
+        public-key (byte-array X25519/POINT_SIZE)
+        _ (do
+            (X25519/generatePrivateKey secure-random-gen private-key)
+            (X25519/generatePublicKey private-key 0 public-key 0))]
+    {:key-type key-type
+     :private-key private-key
+     :public-key public-key}))
+
+(defmethod keygen :p256
+  [opts]
+  (let [key-type (:key-type opts)
+        curve (ECNamedCurveTable/getParameterSpec "P-256")
+        domain-params (ECDomainParameters. (-> curve (.getCurve))
+                                           (-> curve (.getG))
+                                           (-> curve (.getN))
+                                           (-> curve (.getH))
+                                           (-> curve (.getSeed)))
+        key-params (ECKeyGenerationParameters. domain-params secure-random-gen)
+        kpg (doto (ECKeyPairGenerator.)
+              (.init key-params))
+        kp (-> kpg (.generateKeyPair))
+        private-key ^ECPrivateKeyParameters (.getPrivate kp)
+        public-key ^ECPublicKeyParameters (.getPublic kp)]
+    {:key-type key-type
+     :private-key (-> private-key (.getD) (.toByteArray))
+     :public-key (-> public-key (.getQ) (.getEncoded true))}))
+
+(defmulti write-private
+  "Given a keypair map, write private key to file"
+  (fn [key-pair _file & _opts] (:key-type key-pair)))
+
+(defmethod write-private :ed25519
+  [key-pair file & opts]
+  (let [key-bytes (:private-key key-pair)
+        banner (:X25519PrivateKeyBanner cert-banners)
+        pem (PemObject. banner key-bytes)]
+    (write-pem! pem file)))
+
+(defmethod write-private :x25519
+  [key-pair file & opts]
+  (let [key-bytes (:private-key key-pair)
+        banner (:X25519PrivateKeyBanner cert-banners)
+        pem (PemObject. banner key-bytes)]
+    (write-pem! pem file)))
+
+(defmulti write-public
+  "Given a keypair map, write public key to file"
+  (fn [key-pair _file & _opts] (:key-type key-pair)))
+
+(defmethod write-public :ed25519
+  [key-pair file & opts]
+  (let [key-bytes (:private-key key-pair)
+        banner (:X25519PublicKeyBanner cert-banners)
+        pem (PemObject. banner key-bytes)]
+    (write-pem! pem file)))
+
+(defmethod write-public :x25519
+  [key-pair file & opts]
+  (let [key-bytes (:public-key key-pair)
+        banner (:X25519PublicKeyBanner cert-banners)
+        pem (PemObject. banner key-bytes)]
+    (write-pem! pem file)))
+
+(defn verify-cert-signature
+  "Verify user certificate is signed by the certificate authority.
+
+   Return true if cert signature is valid, false either."
+  [ca-cert user-cert]
+  ;; Test case: Create CA with nebula, sign a certificate with nebula.
+  ;; Verify the certificate is sign properly with code.
+  ;; Ed25519Signer
+  ;; https://github.com/slackhq/nebula/blob/master/cert/cert.go#L807
+  ;; https://github.com/slackhq/nebula/blob/f8fb9759e9b049750f6a16b8531112bff814a0f7/cmd/nebula-cert/verify.go
+  (let [pub-key-params (Ed25519PublicKeyParameters.
+                        (get-in ca-cert [:Details :PublicKey]) 0)
+        signature (get-in user-cert [:Signature])
+        raw-details (get-in user-cert [:Details])
+        message (cert-details->bytes raw-details)
+        verifier (Ed25519Signer.)]
+    (.init verifier false pub-key-params)
+    (.update verifier message 0 (count message))
+    (.verifySignature verifier signature)))
+
+(defn verify-cert-files!
+  [ca-cert-file user-cert-file]
+  (let [user-pem (read-pem! user-cert-file)
+        ca-cert-pem (read-pem! ca-cert-file)
+        user-cert (cert/pb->RawNebulaCertificate (.getContent user-pem))
+        ca-cert (cert/pb->RawNebulaCertificate (.getContent ca-cert-pem))]
+    ;; TODO: Implement other certificate and CA checks
+    (verify-cert-signature ca-cert user-cert)))
+
+(comment
+
+  (verify-cert-files! "sample-certs/sample-ca01.crt" "sample-certs/sample-cert-01.crt")
+  (verify-cert-files! "sample-certs/sample-ca01.crt" "ieugen.crt")
+
+  ;; https://codesuche.com/java-examples/org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator/
+  ;; https://www.demo2s.com/java/java-bouncycastle-ed25519keypairgenerator-tutorial-with-examples.html
+  ;; https://www.bouncycastle.org/docs/docs1.5on/index.html
+  ;; https://www.demo2s.com/java/java-bouncycastle-eckeypairgenerator-tutorial-with-examples.html
+  (def k (let [kpg (doto (Ed25519KeyPairGenerator.)
+                     (.init (Ed25519KeyGenerationParameters. secure-random-gen)))
+               kp ^AsymmetricCipherKeyPair (.generateKeyPair kpg)]
+           kp))
+
+  (def privateKey ^Ed25519PrivateKeyParameters (.getPrivate k))
+
+  (count (.getEncoded privateKey))
+  (def X25519-kp (keygen {:key-type :X25519}))
+
+  (count (:private-key X25519-kp))
+  (count (:public-key X25519-kp))
+
+  (write-private X25519-kp "x25519.key")
+  (write-public X25519-kp "x25519.pub")
+
+  (java.util.Arrays/equals (:private-key X25519-kp)
+                           (:public-key X25519-kp))
+
+  (bytes->file "aaa.key" (.getEncoded (:private-key k)))
+  (bytes->file "aaa.pub" (.getEncoded (:public-key k)))
+
+  (count (.getEncoded (:private-key k)))
+  (count (.getEncoded (:public-key k)))
+
+
+  (def ed25519-pair (keygen {:key-type :ed25519}))
+
+  (write-private ed25519-pair "ed25519-pair.key")
+  (write-public ed25519-pair "ed25519-pair.pub")
+
+  (def p256 (keygen {:key-type :p256}))
+
+  (bytes->file "p256.key" (:private-key p256))
+  (bytes->file "p256.pub" (:public-key p256))
+
+  )
 
 ;; TODO:
 ;; generăm pereche de chei pentru certificate
@@ -210,53 +418,6 @@
   ;; - cheia publica din certificat CA
   ;; - corpul certificatului codificat ca bytes
 
-  (def hex (HexFormat/of))
-
-  (def ieugen-bytes (cert/pb->RawNebulaCertificateDetails (io/input-stream "ieugen.bytes")))
-
-  (.formatHex hex (:PublicKey ieugen-bytes))
-
-  (.formatHex hex (:PublicKey (:Details ieugen-crt)))
-
-  (def rnc (Cert$RawNebulaCertificate/parseFrom (.getContent (read-pem! "ieugen.crt"))))
-
-  (->> rnc
-       (.getDetails)
-       (.toByteArray)
-       (.formatHex hex))
-
-  (def a (file->bytes "ieugen.bytes"))
-  (.formatHex hex a)
-  (def arr (protojure/->pb (:Details ieugen-crt)))
-  (.formatHex hex arr)
-
-  (cert/pb->RawNebulaCertificateDetails arr)
-
-  (.formatHex hex (protojure/->pb (cert/pb->RawNebulaCertificateDetails a)))
-
-
-  ;; Ed25519Signer
-  ;; https://github.com/slackhq/nebula/blob/master/cert/cert.go#L807
-  (let [ieugen-crt (cert/pb->RawNebulaCertificate (.getContent (read-pem! "ieugen.crt")))
-        dre-ca-crt (cert/pb->RawNebulaCertificate (.getContent (read-pem! "dre-ca.crt")))
-        pub-key-params (Ed25519PublicKeyParameters. (get-in dre-ca-crt [:Details :PublicKey]) 0)
-        signature (get-in ieugen-crt [:Signature])
-        verifier (Ed25519Signer.)
-        message (file->bytes "ieugen.bytes")]
-    (println ieugen-crt "\n")
-    (println dre-ca-crt "\n")
-    (.init verifier false pub-key-params)
-    (.update verifier message 0 (count message))
-    (.verifySignature verifier signature))
-
-
-
-  ieugen-crt
-  (keys (:Details ieugen-crt))
-
-  (.formatHex hex (:Issuer (:Details ieugen-crt)))
-
-
   (unix-timestamp->instant (get-in ieugen-crt [:Details :NotAfter]))
 
   (cert/pb->RawNebulaCertificate (.getContent ca-crt))
@@ -267,25 +428,6 @@
 
   (def rc (valid-raw-nebula-certificate
            (cert/pb->RawNebulaCertificate (.getContent ca-crt))))
-
-  (-> rc
-      :Details
-      :Issuer
-      (String.))
-
-  (-> rc
-      :Details
-      :NotBefore
-      unix-timestamp->instant)
-
-  (-> rc
-      :Details
-      :NotAfter
-      unix-timestamp->instant)
-
-  (-> rc
-      :Signature
-      String.)
 
   (IPv4Address. 1684275200 (Integer. (- 32 (Integer/numberOfTrailingZeros -256))))
 
@@ -301,4 +443,5 @@
   (mg/generate [:map-of {#"^x-\w*" string?
                          :min 0 :max 3}  #"^x-\w*" :string])
 
-  (mg/generate #"^x-\w*"))
+  (mg/generate #"^x-\w*")
+  )
