@@ -34,13 +34,21 @@
 (defn my-print
   "Print details about a certificate"
   [flags]
-  (not-implemented))
+  (let [{:keys [path]} flags
+        data (certs/print-cert
+              path
+              (select-keys flags [:json :out-qr]))]
+    (println data)))
 
 (defn verify
   "Verifies a certificate isn't expired and was signed by a trusted authority."
   [flags]
   (let [{:keys [ca crt]} flags]
-    (certs/verify-cert-files! ca crt)))
+    (if (certs/verify-cert-files! ca crt)
+      true
+      (do
+        (println "Certs don't match")
+        (System/exit -1)))))
 
 (defn -main
   "Main CLI entry point.
@@ -55,7 +63,10 @@
                  :commands ["ca" #'ca
                             "keygen" #'keygen
                             "sign" #'sign
-                            "pring" #'my-print
+                            "print" {:command #'my-print
+                                     :flags ["--json" "Optional: outputs certificates in json format"
+                                             "--out-qr STR" "NOT Implemented: output a QR code image (png) of the certificate"
+                                             "--path FILE" "Required: path to certificate"]}
                             "verify" {:command #'verify
                                       :flags ["--ca FILE"
                                               "Required: path to a filecontaining one or more ca certificates"

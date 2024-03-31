@@ -17,6 +17,7 @@
         org.bouncycastle/bcpkix-jdk18on {:mvn/version "1.77"}
         org.bouncycastle/bcprov-jdk18on {:mvn/version "1.77"}
         org.clj-commons/byte-streams {:mvn/version "0.3.4"}
+        camel-snake-kebab/camel-snake-kebab {:mvn/version "0.4.3"}
         org.clojure/clojure {:mvn/version "1.11.2"}
         org.clojure/tools.logging {:mvn/version "1.3.0"}
         com.gfredericks/test.chuck {:mvn/version "0.2.14"}}
@@ -24,7 +25,7 @@
                  :fn compile-java
                  :ensure "target/generated/classes"}
  :aliases {:test {:extra-paths ["test/src" "test/resources"]
-                  :extra-deps {lambdaisland/kaocha {:mvn/version "1.87.1366"}
+                  :extra-deps {lambdaisland/kaocha {:mvn/version "1.88.1376"}
                                io.github.matthewdowney/rich-comment-tests {:mvn/version "v1.0.3"}}
                   :main-opts ["-m" "kaocha.runner"]}
            :dev {:extra-paths ["dev" "dev-resources"]

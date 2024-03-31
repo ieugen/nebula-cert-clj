@@ -47,7 +47,7 @@ To generate certificates we need protocol buffers.
 
 There is an issue with protojure serialization: https://github.com/protojure/lib/issues/164
 Use java protocol buffers for serialization.
-Using protojure is very nice to work with so will use protojure for all work except serialization.
+Using protojure is easier to work with, so will use protojure for all work except serialization.
 To handle serialization we will serialize with protojure and then read and write with java protocol
 buffers implementation.
 This will be required until protojure can write packed repeated fields properly.
@@ -101,9 +101,6 @@ nebula-cert sign -ca-crt /ne \
     -out-crt ed25519-pair.crt \
     -ip 100.100.0.1/24
 
-
-
-
 # Print certificate details
 nebula-cert print -path sample-ca01.crt -json
 
@@ -112,6 +109,32 @@ nebula-cert verify -ca sample-ca01.crt -crt sample-cert-01.crt
 
 #+END_SRC
 
+
+* Handling nebula reload on configuration change
+
+Nebula handles *SIGHUP* (signal number 1) and does a configuration and certificate reload when the signal is sent.
+
+During a reload connections are kept.
+If the config is invalid, nebula will keep the old configuration and continue running as nothing happened.
+
+
+#+BEGIN_SRC shell
+ps -aux | grep nebula
+root        9370  0.0  0.0  20488  5356 pts/2    S+   mar26   0:00 sudo /home/ieugen/.guix-profile/bin/nebula --config ./config.yml
+
+# Sending SIGHUP to the process triggers a configuration reload
+kill -1 9370
+
+# In nebula logs you will see something like this
+
+INFO[151006] Caught HUP, reloading config
+INFO[151006] Client cert refreshed from disk               cert="NebulaCertificate {\n\tDetails {\n\t\tName: ieugen.users REDACTED"
+
+# Configuration with error
+INFO[151473] Caught HUP, reloading config
+ERRO[151473] Error occurred while reloading config         config_path=/REDACTED/config.yml error="yaml: line 113: did not find expected key"
+
+#+END_SRC
 
 * References
 
