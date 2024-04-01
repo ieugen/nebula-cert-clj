@@ -22,9 +22,10 @@
 
 (defn keygen
   "Create a public/private key pair.
-   The public key can be signed by a nebula CA"
+   The public key can be signed by a nebula CA with `sign`"
   [flags]
-  (not-implemented))
+  (let [{:keys [curve out-key out-pub]} flags]
+    (certs/keygen-cli curve out-key out-pub)))
 
 (defn sign
   "Create and sign a certificate."
@@ -35,7 +36,7 @@
   "Print details about a certificate"
   [flags]
   (let [{:keys [path]} flags
-        data (certs/print-cert
+        data (certs/print-cert-cli
               path
               (select-keys flags [:json :out-qr]))]
     (println data)))
@@ -45,7 +46,9 @@
   [flags]
   (let [{:keys [ca crt]} flags]
     (if (certs/verify-cert-files! ca crt)
-      true
+      (do
+        (println "ok")
+        true)
       (do
         (println "Certs don't match")
         (System/exit -1)))))
@@ -61,7 +64,15 @@
                  :flags ["-V, -version" "Prints the version"
                          "-h, --help" "Prints this help message"]
                  :commands ["ca" #'ca
-                            "keygen" #'keygen
+                            "keygen" {:command #'keygen
+                                      :flags
+                                      ["--curve STR"
+                                       {:doc "ECDH Curve (25519, P256) (default \"25519\")"
+                                        :default "25519"}
+                                       "--out-key STR"
+                                       "Required*: path to write the private key to"
+                                       "--out-pub STR"
+                                       "Required*: path to write the public key to"]}
                             "sign" #'sign
                             "print" {:command #'my-print
                                      :flags ["--json" "Optional: outputs certificates in json format"

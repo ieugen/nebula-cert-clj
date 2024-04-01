@@ -90,6 +90,8 @@
   )
 
 (defn write-pem!
+  "Write a PEM file to disk.
+   TODO: Implement write with specific file permissions ?!"
   [^PemObject pem file]
   (with-open [pw (PemWriter. (io/writer file))]
     (.writeObject pw pem)))
@@ -282,6 +284,22 @@
   []
   (enumeration-seq (ECNamedCurveTable/getNames)))
 
+(defn curve-str-kw
+  "Return a keyword from curve str or nil."
+  [curve]
+  (case curve
+    ("25519" "X25519" "Curve25519" "CURVE25519") :X25519
+    "P256" :P256
+    nil))
+
+^:rct/test
+(comment
+
+  (map curve-str-kw ["25519" "X25519" "Curve25519" "CURVE25519" "P256" "Invalid"])
+  ;; => (:X25519 :X25519 :X25519 :X25519 :P256 nil)
+
+  )
+
 (defmulti keygen
   "Implement keygeneration for supported key-pair types.
    Expects a map with a key named :key-type"
@@ -316,7 +334,7 @@
      :private-key private-key
      :public-key public-key}))
 
-(defmethod keygen :p256
+(defmethod keygen :P256
   [opts]
   (let [key-type (:key-type opts)
         curve (ECNamedCurveTable/getParameterSpec "P-256")
@@ -339,14 +357,7 @@
   "Given a keypair map, write private key to file"
   (fn [key-pair _file & _opts] (:key-type key-pair)))
 
-(defmethod write-private :ed25519
-  [key-pair file & opts]
-  (let [key-bytes (:private-key key-pair)
-        banner (:X25519PrivateKeyBanner cert-banners)
-        pem (PemObject. banner key-bytes)]
-    (write-pem! pem file)))
-
-(defmethod write-private :x25519
+(defmethod write-private :X25519
   [key-pair file & opts]
   (let [key-bytes (:private-key key-pair)
         banner (:X25519PrivateKeyBanner cert-banners)
@@ -357,15 +368,8 @@
   "Given a keypair map, write public key to file"
   (fn [key-pair _file & _opts] (:key-type key-pair)))
 
-(defmethod write-public :ed25519
-  [key-pair file & opts]
-  (let [key-bytes (:private-key key-pair)
-        banner (:X25519PublicKeyBanner cert-banners)
-        pem (PemObject. banner key-bytes)]
-    (write-pem! pem file)))
-
-(defmethod write-public :x25519
-  [key-pair file & opts]
+(defmethod write-public :X25519
+  [key-pair file & {:keys [file-mode] :as _opts}]
   (let [key-bytes (:public-key key-pair)
         banner (:X25519PublicKeyBanner cert-banners)
         pem (PemObject. banner key-bytes)]
@@ -743,7 +747,7 @@
   (write-private ed25519-pair "ed25519-pair.key")
   (write-public ed25519-pair "ed25519-pair.pub")
 
-  (def p256 (keygen {:key-type :p256}))
+  (def p256 (keygen {:key-type :P256}))
 
   (bytes->file "p256.key" (:private-key p256))
   (bytes->file "p256.pub" (:public-key p256)))
@@ -895,7 +899,7 @@
         not-before (unix-timestamp->instant NotBefore)
         not-before (java-instant->iso-str not-before)
         curve (str/upper-case (name curve))
-        Issuer (String. Issuer)
+        Issuer (format-hex Issuer)
         PublicKey (format-hex PublicKey)
         Signature (format-hex Signature)
         d {:Name Name
@@ -939,9 +943,9 @@
           {:keys [Name Ips Subnets Groups
                   NotBefore NotAfter IsCA
                   Issuer PublicKey Curve]} Details]
-      (str "NebulaCertificate {
-            \tDetails {
-            \t\tName: " Name "\n"
+      (str "NebulaCertificate {\n"
+            "\tDetails {\n"
+            "\t\tName: " Name "\n"
            (format-coll-str Ips "Ips")
            (format-coll-str Subnets "Subnets")
            (format-coll-str Groups "Groups" true)
@@ -956,8 +960,8 @@
            "\tSignature: " Signature "\n"
            "}"))))
 
-(defn print-cert
-  "Print details from a certificate"
+(defn print-cert-cli
+  "CLI command - print details from a certificate."
   [cert-path & {:keys [json out-qr] :as opts}]
   (let [cert-pem (read-pem! cert-path)
         cert (pem->RawNebulaCertificate cert-pem)
@@ -972,13 +976,21 @@
 
   (def cert (pem->RawNebulaCertificate
              (read-pem! "sample-certs/sample-ca01.crt")))
-
   cert
-
   (RawNebulaCertificate->NebulaCertificate cert)
 
-  (ZoneOffset/systemDefault)
+  )
 
+(defn keygen-cli
+  "CLI command - generate nebula keys."
+  [curve out-key out-pub & _opts]
+  (let [curve (curve-str-kw curve)
+        key-pair (keygen {:key-type curve})]
+    (write-private key-pair out-key)
+    (write-public key-pair out-pub)))
 
+(comment
+
+  (keygen-cli "25519" "25519.key" "25519.pub")
 
   )
