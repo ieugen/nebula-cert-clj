@@ -712,7 +712,9 @@
 
 (defn verify-cert-files!
   "Verify a certificate is valid and issued by a specific CA.
-  The CA file can contain multiple certs."
+  The CA file can contain multiple certs.
+
+  TODO: Implement support for P256 check."
   [ca-cert-file user-cert-file]
   (when (str/blank? ca-cert-file)
     (throw (ex-info "CA cert file path is invalid"
