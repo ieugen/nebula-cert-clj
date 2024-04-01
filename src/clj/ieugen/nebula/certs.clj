@@ -1,10 +1,10 @@
 (ns ieugen.nebula.certs
-  (:require [clojure.java.io :as io]
+  (:require [camel-snake-kebab.core :as csk]
+            [clojure.java.io :as io]
             [clojure.set :as cset]
             [clojure.string :as str]
             [ieugen.nebula.generated.cert :as cert]
             [jsonista.core :as j]
-            [camel-snake-kebab.core :as csk]
             [malli.core :as m]
             [malli.error :as me]
             [malli.generator :as mg]
@@ -25,11 +25,11 @@
             ECDomainParameters
             ECKeyGenerationParameters
             ECPrivateKeyParameters
-            ECPublicKeyParameters
             Ed25519KeyGenerationParameters
             Ed25519PrivateKeyParameters
             Ed25519PublicKeyParameters)
            (org.bouncycastle.crypto.signers Ed25519Signer)
+           (org.bouncycastle.crypto.util SubjectPublicKeyInfoFactory)
            (org.bouncycastle.jce ECNamedCurveTable)
            (org.bouncycastle.jce.provider BouncyCastleProvider)
            (org.bouncycastle.math.ec.rfc7748 X25519)
@@ -298,6 +298,7 @@
   (map curve-str-kw ["25519" "X25519" "Curve25519" "CURVE25519" "P256" "Invalid"])
   ;; => (:X25519 :X25519 :X25519 :X25519 :P256 nil)
 
+  (ec-named-curves-seq)
   )
 
 (defmulti keygen
@@ -335,6 +336,7 @@
      :public-key public-key}))
 
 (defmethod keygen :P256
+  ;; https://pkg.go.dev/crypto/ecdh#P256
   [opts]
   (let [key-type (:key-type opts)
         curve (ECNamedCurveTable/getParameterSpec "P-256")
@@ -346,12 +348,18 @@
         key-params (ECKeyGenerationParameters. domain-params secure-random-gen)
         kpg (doto (ECKeyPairGenerator.)
               (.init key-params))
-        kp (-> kpg (.generateKeyPair))
+        ;; https://stackoverflow.com/questions/33642100/generating-64-byte-public-key-for-dh-key-exchange-using-bouncy-castle
+        kp ^AsymmetricCipherKeyPair (-> kpg (.generateKeyPair))
+        pub-key-info (SubjectPublicKeyInfoFactory/createSubjectPublicKeyInfo
+                      (-> kp .getPublic))
         private-key ^ECPrivateKeyParameters (.getPrivate kp)
-        public-key ^ECPublicKeyParameters (.getPublic kp)]
+        public-key (-> pub-key-info
+                       .getPublicKeyData
+                       .getBytes)]
     {:key-type key-type
      :private-key (-> private-key (.getD) (.toByteArray))
-     :public-key (-> public-key (.getQ) (.getEncoded true))}))
+     :public-key public-key
+     :pub-key-info pub-key-info}))
 
 (defmulti write-private
   "Given a keypair map, write private key to file"
@@ -364,6 +372,13 @@
         pem (PemObject. banner key-bytes)]
     (write-pem! pem file)))
 
+(defmethod write-private :P256
+  [key-pair file & opts]
+  (let [key-bytes (:private-key key-pair)
+        banner (:P256PrivateKeyBanner cert-banners)
+        pem (PemObject. banner key-bytes)]
+    (write-pem! pem file)))
+
 (defmulti write-public
   "Given a keypair map, write public key to file"
   (fn [key-pair _file & _opts] (:key-type key-pair)))
@@ -372,6 +387,13 @@
   [key-pair file & {:keys [file-mode] :as _opts}]
   (let [key-bytes (:public-key key-pair)
         banner (:X25519PublicKeyBanner cert-banners)
+        pem (PemObject. banner key-bytes)]
+    (write-pem! pem file)))
+
+(defmethod write-public :P256
+  [key-pair file & {:keys [file-mode] :as _opts}]
+  (let [key-bytes (:public-key key-pair)
+        banner (:P256PublicKeyBanner cert-banners)
         pem (PemObject. banner key-bytes)]
     (write-pem! pem file)))
 
@@ -750,7 +772,9 @@
   (def p256 (keygen {:key-type :P256}))
 
   (bytes->file "p256.key" (:private-key p256))
-  (bytes->file "p256.pub" (:public-key p256)))
+  (bytes->file "p256.pub" (:public-key p256))
+
+  )
 
 ;; TODO:
 ;; generăm pereche de chei pentru certificate
@@ -992,5 +1016,6 @@
 (comment
 
   (keygen-cli "25519" "25519.key" "25519.pub")
+  (keygen-cli "P256" "P256.key" "P256.pub")
 
   )
