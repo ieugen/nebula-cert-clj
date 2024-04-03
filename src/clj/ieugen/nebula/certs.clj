@@ -320,7 +320,7 @@
 
 (defmethod keygen :X25519
   [opts]
-  ;; Generate EHDH X25519
+  ;; Generate ECDH X25519
   ;;
   ;; https://github.com/bcgit/bc-java/issues/251#issuecomment-347746855
   ;; Use X25519 class to generate ECDH X25519 keys
@@ -710,7 +710,7 @@
   [^PemObject pem]
   (cert/pb->RawNebulaCertificate (.getContent pem)))
 
-(defn verify-cert-files!
+(defn ^:deprecated verify-cert-files!
   "Verify a certificate is valid and issued by a specific CA.
   The CA file can contain multiple certs.
 
