@@ -2,6 +2,5 @@
  {:tests [{:id          :unit
            :test-paths  ["test/src" "src/clj"]
            :ns-patterns [".*"]}]
-          ;; :reporter kaocha.report.progress/report
-          ;; :plugins [:kaocha.plugin/profiling :kaocha.plugin/notifier]
-  }
+  :reporter kaocha.report.progress/report
+  :plugins [:kaocha.plugin/profiling :kaocha.plugin/notifier]}
