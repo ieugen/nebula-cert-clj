@@ -3,19 +3,20 @@
          "generated/clj"
          "src/resources"
          "target/generated/classes"]
- :deps {com.lambdaisland/cli {:mvn/version "0.7.33"}
+ :deps {camel-snake-kebab/camel-snake-kebab {:mvn/version "0.4.3"}
+        com.lambdaisland/cli {:mvn/version "0.7.33"}
+        com.gfredericks/test.chuck {:mvn/version "0.2.14"}
         com.github.seancfoley/ipaddress {:mvn/version "5.5.0"}
         com.google.protobuf/protobuf-java {:mvn/version "3.25.3"}
+        failjure/failjure {:mvn/version "2.3.0"}
         io.github.protojure/core {:mvn/version "2.8.2"}
         io.github.protojure/google.protobuf {:mvn/version "2.0.1"}
         metosin/jsonista {:mvn/version "0.3.8"}
         metosin/malli {:mvn/version "0.15.0"}
         org.bouncycastle/bcpkix-jdk18on {:mvn/version "1.77"}
         org.bouncycastle/bcprov-jdk18on {:mvn/version "1.77"}
-        camel-snake-kebab/camel-snake-kebab {:mvn/version "0.4.3"}
         org.clojure/clojure {:mvn/version "1.11.2"}
-        org.clojure/tools.logging {:mvn/version "1.3.0"}
-        com.gfredericks/test.chuck {:mvn/version "0.2.14"}}
+        org.clojure/tools.logging {:mvn/version "1.3.0"}}
  :deps/prep-lib {:alias :build
                  :fn compile-java
                  :ensure "target/generated/classes"}

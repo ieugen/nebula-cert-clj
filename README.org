@@ -95,11 +95,18 @@ nebula-cert keygen -curve P256 -out-key ecdh-p256-01.key -out-pub ecdh-p256-01.p
 
 
 # Sign certificate
-nebula-cert sign -ca-crt /ne \
+nebula-cert sign -ca-crt sample-certs/sample-ca01.crt  \
     -ca-key sample-certs/sample-ca01.key \
-    -name ieugen -in-pub ed25519-pair.pub \
-    -out-crt ed25519-pair.crt \
+    -name ieugen -in-pub sample-certs/25519.pub \
+    -out-crt sample-25519.crt \
     -ip 100.100.0.1/24
+
+# Sign command using nebula-cert-clj
+./nebula-cert-clj.sh sign --ca-crt sample-certs/sample-ca01.crt \
+    --ca-key sample-certs/sample-ca01.key \
+    --name ieugen --in-pub sample-certs/25519.pub \
+    --out-crt sample-25519.crt  \
+    --ip 100.100.0.1/24
 
 # Print certificate details
 nebula-cert print -path sample-ca01.crt -json

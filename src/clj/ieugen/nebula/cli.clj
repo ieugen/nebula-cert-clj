@@ -1,37 +1,40 @@
 (ns ieugen.nebula.cli
   "A port for nebula-cert command line applcation to clojure."
   (:require [ieugen.nebula.certs :as certs]
+            [ieugen.nebula.time :as time]
             [lambdaisland.cli :as cli]))
 
-(defn not-implemented
-  ([]
-   (not-implemented nil))
-  ([flags]
-   (println "Not implemented yet" flags)))
+
 (defn cmd-ca
   "Create a self signed certificate authority"
   [flags]
-  (not-implemented))
+  (println flags))
 
 (defn cmd-keygen
   "Create a public/private key pair.
    The public key can be signed by a nebula CA with `sign`"
   [flags]
   (let [{:keys [curve out-key out-pub]} flags]
-    (certs/keygen-cli curve out-key out-pub)))
+    (certs/cli-keygen curve out-key out-pub)))
 
 (defn cmd-sign
   "Create and sign a certificate."
   [flags]
-  (println flags))
+  (let [{:keys [ca-crt ca-key name ip out-qr]} flags
+        opts {:flags flags}]
+    (when out-qr
+      (println "QR generation is not implemented"))
+    (certs/cli-sign ca-crt ca-key name ip opts)))
 
 (defn cmd-print
   "Print details about a certificate"
   [flags]
-  (let [{:keys [path]} flags
-        data (certs/print-cert-cli
+  (let [{:keys [path out-qr]} flags
+        data (certs/cli-print-cert
               path
               (select-keys flags [:json :out-qr]))]
+    (when out-qr
+      (println "QR generation is not implemented."))
     (println data)))
 
 (defn cmd-verify
@@ -71,7 +74,8 @@
                               :default "25519"}
             "--duration DURATION" {:doc (str "Optional: amount of time the certificate should be valid for."
                                              "Valid time units are seconds: 's', minutes: 'm', hours: 'h'")
-                                   :default "8760h0m0s"}
+                                   :default "8760h0m0s"
+                                   :parse time/parse-duration}
             "--encrypt" "Optional: prompt for passphrase and write out-key in an encrypted format"
             "--groups STRING" {:doc (str "Optional: comma separated list of groups."
                                          "This will limit which groups subordinate certs can use")}
@@ -107,7 +111,8 @@
               "--duration DURATION" {:doc
                                      (str "Optional: How long the cert should be valid for. "
                                           "Default is 1s before the signing cert expires."
-                                          "Valid time units are seconds: 's', minutes: 'm' and hours: 'h'")}
+                                          "Valid time units are seconds: 's', minutes: 'm' and hours: 'h'")
+                                     :parse time/parse-duration}
               "--groups STRING" "Optional: comma separated list of groups."
               "--in-pub FILE" "Optional (if out-key not set): path to read a previously generated public key"
               "--ip STRING" "Required: ipv4 address and network in CIDR notation to assign the cert"
