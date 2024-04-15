@@ -1,6 +1,6 @@
 (ns ieugen.nebula.cli
   "A port for nebula-cert command line applcation to clojure."
-  (:require [ieugen.nebula.certs :as certs]
+  (:require [ieugen.nebula.core :as core]
             [ieugen.nebula.time :as time]
             [lambdaisland.cli :as cli]))
 
@@ -15,7 +15,7 @@
    The public key can be signed by a nebula CA with `sign`"
   [flags]
   (let [{:keys [curve out-key out-pub]} flags]
-    (certs/cli-keygen curve out-key out-pub)))
+    (core/cli-keygen curve out-key out-pub)))
 
 (defn cmd-sign
   "Create and sign a certificate."
@@ -24,13 +24,13 @@
         opts {:flags flags}]
     (when out-qr
       (println "QR generation is not implemented"))
-    (certs/cli-sign ca-crt ca-key name ip opts)))
+    (core/cli-sign ca-crt ca-key name ip opts)))
 
 (defn cmd-print
   "Print details about a certificate"
   [flags]
   (let [{:keys [path out-qr]} flags
-        data (certs/cli-print-cert
+        data (core/cli-print-cert
               path
               (select-keys flags [:json :out-qr]))]
     (when out-qr
@@ -42,7 +42,7 @@
   [flags]
   (let [{:keys [ca crt]} flags]
     ;;TODO: USe certs/verify
-    (if (certs/verify-cert-files! ca crt)
+    (if (core/verify-cert-files! ca crt)
       (do
         (println "ok")
         true)
