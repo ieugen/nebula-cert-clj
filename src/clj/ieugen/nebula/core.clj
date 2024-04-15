@@ -15,53 +15,48 @@
             [malli.generator :as mg])
   (:import (ieugen.nebula.generated.cert Cert$RawNebulaCertificate Cert$RawNebulaCertificateDetails)
            (inet.ipaddr.ipv4 IPv4Address)
-           (java.security SecureRandom Security)
-           (java.time Duration Instant)
+           (java.time Instant)
            (java.util Arrays)
            (org.bouncycastle.crypto Signer)
            (org.bouncycastle.crypto AsymmetricCipherKeyPair)
            (org.bouncycastle.crypto.ec CustomNamedCurves)
-           (org.bouncycastle.crypto.generators ECKeyPairGenerator Ed25519KeyPairGenerator)
-           (org.bouncycastle.crypto.params
-            ECDomainParameters
-            ECKeyGenerationParameters
-            ECPrivateKeyParameters
-            Ed25519KeyGenerationParameters
-            Ed25519PrivateKeyParameters
-            Ed25519PublicKeyParameters)
+           (org.bouncycastle.crypto.generators Ed25519KeyPairGenerator)
+           (org.bouncycastle.crypto.params Ed25519KeyGenerationParameters Ed25519PrivateKeyParameters Ed25519PublicKeyParameters)
            (org.bouncycastle.crypto.signers Ed25519Signer)
-           (org.bouncycastle.crypto.util SubjectPublicKeyInfoFactory)
            (org.bouncycastle.jce ECNamedCurveTable)
-           (org.bouncycastle.jce.provider BouncyCastleProvider)
            (org.bouncycastle.math.ec.rfc7748 X25519)
            (org.bouncycastle.util.io.pem PemObject)))
 
 (set! *warn-on-reflection* true)
 
-(Security/addProvider (BouncyCastleProvider.))
 
-(defn security-providers
-  "Get security providers registered with the JVM."
-  []
-  (Security/getProviders))
+(defmethod crypto/write-private :Curve25519
+  [key-pair file & opts]
+  (let [key-bytes (:private-key key-pair)
+        banner (:Curve25519PrivateKeyBanner crypto/cert-banners)
+        pem (PemObject. banner key-bytes)]
+    (pem/write-pem! pem file)))
 
-(def secure-random-gen (SecureRandom.))
+(defmethod crypto/write-private :P256
+  [key-pair file & opts]
+  (let [key-bytes (:private-key key-pair)
+        banner (:P256PrivateKeyBanner crypto/cert-banners)
+        pem (PemObject. banner key-bytes)]
+    (pem/write-pem! pem file)))
 
-;; https://github.com/slackhq/nebula/blob/master/cert/cert.go#L29
+(defmethod crypto/write-public :Curve25519
+  [key-pair file & {:keys [file-mode] :as _opts}]
+  (let [key-bytes (:public-key key-pair)
+        banner (:Curve25519PublicKeyBanner crypto/cert-banners)
+        pem (PemObject. banner key-bytes)]
+    (pem/write-pem! pem file)))
 
-(def cert-banners
-  {:CertBanner "NEBULA CERTIFICATE"
-   :Curve25519PrivateKeyBanner "NEBULA X25519 PRIVATE KEY"
-   :Curve25519PublicKeyBanner "NEBULA X25519 PUBLIC KEY"
-   :EncryptedEd25519PrivateKeyBanner "NEBULA ED25519 ENCRYPTED PRIVATE KEY"
-   :Ed25519PrivateKeyBanner "NEBULA ED25519 PRIVATE KEY"
-   :Ed25519PublicKeyBanner "NEBULA ED25519 PUBLIC KEY"
-
-   :P256PrivateKeyBanner "NEBULA P256 PRIVATE KEY"
-   :P256PublicKeyBanner "NEBULA P256 PUBLIC KEY"
-   :EncryptedECDSAP256PrivateKeyBanner "NEBULA ECDSA P256 ENCRYPTED PRIVATE KEY"
-   :ECDSAP256PrivateKeyBanner "NEBULA ECDSA P256 PRIVATE KEY"})
-
+(defmethod crypto/write-public :P256
+  [key-pair file & {:keys [file-mode] :as _opts}]
+  (let [key-bytes (:public-key key-pair)
+        banner (:P256PublicKeyBanner crypto/cert-banners)
+        pem (PemObject. banner key-bytes)]
+    (pem/write-pem! pem file)))
 
 (defn file->bytes
   [file]
@@ -75,112 +70,6 @@
   (with-open [f (io/output-stream file)]
     (.write f bytes)))
 
-(defmulti keygen
-  "Implement keygeneration for supported key-pair types.
-   Expects a map with a key named :key-type"
-  (fn [opts] (:key-type opts)))
-
-(defmethod keygen :ed25519
-  [opts]
-  (let [key-type (:key-type opts)
-        kpg (doto (Ed25519KeyPairGenerator.)
-              (.init (Ed25519KeyGenerationParameters. secure-random-gen)))
-        kp ^AsymmetricCipherKeyPair (.generateKeyPair kpg)
-        private-key ^Ed25519PrivateKeyParameters (.getPrivate kp)
-        public-key ^Ed25519PublicKeyParameters (.getPublic kp)]
-    {:key-type key-type
-     :public-key (.getEncoded public-key)
-     :private-key (.getEncoded private-key)}))
-
-(defmethod keygen :Curve25519
-  [opts]
-  ;; Generate ECDH X25519
-  ;;
-  ;; https://github.com/bcgit/bc-java/issues/251#issuecomment-347746855
-  ;; Use X25519 class to generate ECDH X25519 keys
-  ;; https://github.com/bcgit/bc-java/blob/main/core/src/test/java/org/bouncycastle/math/ec/rfc7748/test/X25519Test.java#L40
-  (let [key-type (:key-type opts)
-        private-key (byte-array X25519/SCALAR_SIZE)
-        public-key (byte-array X25519/POINT_SIZE)
-        _ (do
-            (X25519/generatePrivateKey secure-random-gen private-key)
-            (X25519/generatePublicKey private-key 0 public-key 0))]
-    {:key-type key-type
-     :private-key private-key
-     :public-key public-key}))
-
-(defn p256-domain-params
-  (^ECDomainParameters []
-   (let [curve (ECNamedCurveTable/getParameterSpec "P-256")
-         domain-params (ECDomainParameters. (-> curve (.getCurve))
-                                            (-> curve (.getG))
-                                            (-> curve (.getN))
-                                            (-> curve (.getH))
-                                            (-> curve (.getSeed)))]
-     domain-params)))
-
-(defn ^:private  key-pair-generator-p256
-  "Builds a KeyPairGenerator for P256."
-  (^ECKeyPairGenerator []
-   (let [domain-params (p256-domain-params)
-         key-params (ECKeyGenerationParameters. domain-params secure-random-gen)
-         kpg ^ECKeyPairGenerator (doto (ECKeyPairGenerator.)
-                                   (.init key-params))]
-     kpg)))
-
-(defmethod keygen :P256
-  ;; https://pkg.go.dev/crypto/ecdh#P256
-  [opts]
-  (let [key-type (:key-type opts)
-        kpg (key-pair-generator-p256)
-        ;; https://stackoverflow.com/questions/33642100/generating-64-byte-public-key-for-dh-key-exchange-using-bouncy-castle
-        kp ^AsymmetricCipherKeyPair (-> kpg (.generateKeyPair))
-        pub-key-info (SubjectPublicKeyInfoFactory/createSubjectPublicKeyInfo
-                      (-> kp .getPublic))
-        private-key (-> ^ECPrivateKeyParameters (.getPrivate kp) (.getD) (.toByteArray))
-        public-key (-> pub-key-info
-                       .getPublicKeyData
-                       .getBytes)]
-    {:key-type key-type
-     :private-key private-key
-     :public-key public-key
-     :pub-key-info pub-key-info}))
-
-(defmulti write-private
-  "Given a keypair map, write private key to file"
-  (fn [key-pair _file & _opts] (:key-type key-pair)))
-
-(defmethod write-private :Curve25519
-  [key-pair file & opts]
-  (let [key-bytes (:private-key key-pair)
-        banner (:Curve25519PrivateKeyBanner cert-banners)
-        pem (PemObject. banner key-bytes)]
-    (pem/write-pem! pem file)))
-
-(defmethod write-private :P256
-  [key-pair file & opts]
-  (let [key-bytes (:private-key key-pair)
-        banner (:P256PrivateKeyBanner cert-banners)
-        pem (PemObject. banner key-bytes)]
-    (pem/write-pem! pem file)))
-
-(defmulti write-public
-  "Given a keypair map, write public key to file"
-  (fn [key-pair _file & _opts] (:key-type key-pair)))
-
-(defmethod write-public :Curve25519
-  [key-pair file & {:keys [file-mode] :as _opts}]
-  (let [key-bytes (:public-key key-pair)
-        banner (:Curve25519PublicKeyBanner cert-banners)
-        pem (PemObject. banner key-bytes)]
-    (pem/write-pem! pem file)))
-
-(defmethod write-public :P256
-  [key-pair file & {:keys [file-mode] :as _opts}]
-  (let [key-bytes (:public-key key-pair)
-        banner (:P256PublicKeyBanner cert-banners)
-        pem (PemObject. banner key-bytes)]
-    (pem/write-pem! pem file)))
 
 (defn ^:deprecated verify-cert-signature
   "Verify user certificate is signed by the certificate authority.
@@ -222,26 +111,15 @@
   [user-cert ^bytes pub-key-bytes]
   (let [{:keys [Details Signature]} user-cert
         message (cert/marshal-raw-cert-details Details)
-        domain-params (p256-domain-params)
+        domain-params (crypto/p256-domain-params)
         curve-params (CustomNamedCurves/getByName "P-256")
-        domain-params (p256-domain-params)
+        domain-params (crypto/p256-domain-params)
         ;; q (-> curve-params .getCurve .getQ)
         ;; p256-asn-primitive (-> curve-params .toASN1Primitive .toASN1BitString)
         ;; pub-key-info (SubjectPublicKeyInfo. (.getCurve curve-params) pub-key-bytes)
         ]
     (throw (UnsupportedOperationException. "Not implemented"))))
 
-
-(comment
-
-  (def p256-pub (.getContent (pem/read-pem! "sample-certs/P256.pub")))
-  (def p256-cert (-> (pem/read-pem! "sample-certs/P256.crt")
-                     .getContent
-                     gcert/pb->RawNebulaCertificate))
-
-  (def x9ec (verify-signature-p256 p256-cert p256-pub))
-
-  (ECNamedCurveTable/getParameterSpec "P-256"))
 
 (defn check-signature
   "Check if a certificate is signed with the provided public key"
@@ -255,6 +133,17 @@
       (verify-signature-p256 cert pub-key)
       :default  false)))
 
+
+(comment
+
+  (def p256-pub (.getContent (pem/read-pem! "sample-certs/P256.pub")))
+  (def p256-cert (-> (pem/read-pem! "sample-certs/P256.crt")
+                     .getContent
+                     gcert/pb->RawNebulaCertificate))
+
+  (def x9ec (verify-signature-p256 p256-cert p256-pub))
+
+  (ECNamedCurveTable/getParameterSpec "P-256"))
 
 (defn verify
   "Verify a certificate is valid:
@@ -312,20 +201,20 @@
   ;; https://www.bouncycastle.org/docs/docs1.5on/index.html
   ;; https://www.demo2s.com/java/java-bouncycastle-eckeypairgenerator-tutorial-with-examples.html
   (def k (let [kpg (doto (Ed25519KeyPairGenerator.)
-                     (.init (Ed25519KeyGenerationParameters. secure-random-gen)))
+                     (.init (Ed25519KeyGenerationParameters. crypto/secure-random-gen)))
                kp ^AsymmetricCipherKeyPair (.generateKeyPair kpg)]
            kp))
 
   (def privateKey ^Ed25519PrivateKeyParameters (.getPrivate k))
 
   (count (.getEncoded privateKey))
-  (def X25519-kp (keygen {:key-type :Curve25519}))
+  (def X25519-kp (crypto/keygen {:key-type :Curve25519}))
 
   (count (:private-key X25519-kp))
   (count (:public-key X25519-kp))
 
-  (write-private X25519-kp "x25519.key")
-  (write-public X25519-kp "x25519.pub")
+  (crypto/write-private X25519-kp "x25519.key")
+  (crypto/write-public X25519-kp "x25519.pub")
 
   (java.util.Arrays/equals (:private-key X25519-kp)
                            (:public-key X25519-kp))
@@ -337,12 +226,12 @@
   (count (.getEncoded (:public-key k)))
 
 
-  (def ed25519-pair (keygen {:key-type :ed25519}))
+  (def ed25519-pair (crypto/keygen {:key-type :ed25519}))
 
-  (write-private ed25519-pair "ed25519-pair.key")
-  (write-public ed25519-pair "ed25519-pair.pub")
+  (crypto/write-private ed25519-pair "ed25519-pair.key")
+  (crypto/write-public ed25519-pair "ed25519-pair.pub")
 
-  (def p256 (keygen {:key-type :P256}))
+  (def p256 (crypto/keygen {:key-type :P256}))
 
   (bytes->file "p256.key" (:private-key p256))
   (bytes->file "p256.pub" (:public-key p256)))
@@ -440,9 +329,9 @@
   "CLI command - generate nebula keys."
   [curve out-key out-pub & _opts]
   (let [curve (crypto/curve-str-kw curve)
-        key-pair (keygen {:key-type curve})]
-    (write-private key-pair out-key)
-    (write-public key-pair out-pub)))
+        key-pair (crypto/keygen {:key-type curve})]
+    (crypto/write-private key-pair out-key)
+    (crypto/write-public key-pair out-pub)))
 
 (comment
 
@@ -564,118 +453,6 @@
      ;; keys are ok
      private-key-ok)))
 
-(defn compute-cert-not-after
-  "Cert NotAfter value is computed like:
-   - now + duration - when a duration is specified
-   - one second before given expiration of not-after
-
-   Does not check if now + duration is past not-after."
-  [^Instant now ^Instant not-after ^Duration duration]
-  (if (t/negative-or-zero-duration? duration)
-    (.minusSeconds not-after 1)
-    (.plus now duration)))
-
-^:rct/test
-(comment
-
-  (def my-now1 (Instant/parse "2024-04-10T09:00:00Z"))
-  (def my-not-after1 (.plusSeconds my-now1 300))
-
-  (str (compute-cert-not-after my-now1 my-not-after1 Duration/ZERO))
-  ;; => "2024-04-10T09:04:59Z"
-
-  (str (compute-cert-not-after my-now1 my-not-after1 (Duration/parse "PT-1s")))
-  ;; => "2024-04-10T09:04:59Z"
-
-  (str (compute-cert-not-after my-now1 my-not-after1 (Duration/parse "PT10s")))
-  ;; => "2024-04-10T09:00:10Z"
-
-  (str (compute-cert-not-after my-now1 my-not-after1 (Duration/parse "PT350s")))
-  ;; => "2024-04-10T09:05:50Z"
-
-  )
-
-(defn parse-groups
-  "Parse string of group names separated by colon , .
-   Return a collection of groups.
-   Trim group names"
-  [^String groups-str]
-  (when groups-str
-    (let [groups (str/split groups-str #",")
-          groups (map str/trim groups)]
-      (into [] (filter #(not (str/blank? %)) groups)))))
-
-^:rct/test
-(comment
-
-  (parse-groups nil)
-  ;; => nil
-
-  (parse-groups "")
-  ;; => []
-
-  (parse-groups "a")
-  ;; => ["a"]
-
-  (parse-groups "a,")
-  ;; => ["a"]
-
-  (parse-groups "a , b")
-  ;; => ["a" "b"]
-
-  )
-
-(defn parse-subnets
-  "Parse a string of subnets to a vector of ^IPv4Address .
-   Strings must be valid network addresses: ipv4 addres + network prefix
-   In case of failure returns a failjure.core.Failure "
-  [^String subnets-str]
-  (when-not (str/blank? subnets-str)
-    (let [subnets (str/split subnets-str #",")
-          subnets (map str/trim subnets)
-          subnets (map net/parse-ipv4-cidr subnets)
-          failed (filter f/failed? subnets)
-          failed? (pos-int? (count failed))]
-      (if failed?
-        (f/fail "Failed to parse subnets: %s. %s" subnets-str
-                (f/message (first failed)))
-        (into [] subnets)))))
-
-^:rct/test
-(comment
-
-  (parse-subnets nil)
-  ;; => nil
-
-  (parse-subnets "")
-  ;; => nil
-
-  (parse-subnets "a")
-  ;; => #failjure.core.Failure{:message "Failed to parse subnets: a. a IP address error: IP is not IPv4"}
-
-  (parse-subnets "192.168.0.1")
-  ;; => #failjure.core.Failure{:message "Failed to parse subnets: 192.168.0.1. Not a network address: 192.168.0.1"}
-
-  (parse-subnets "192.168.0.1/16,a")
-  ;; => #failjure.core.Failure{:message "Failed to parse subnets: 192.168.0.1/16,a. a IP address error: IP is not IPv4"}
-
-  (->> (parse-subnets "192.168.0.1/16,192.168.0.1/22")
-       (map str))
-  ;; => ("192.168.0.1/16" "192.168.0.1/22")
-
-  (->> (parse-subnets "192.168.0.1/16,2001:db8::2:1/64")
-       (map str))
-  ;; => ("[:message \"Failed to parse subnets: 192.168.0.1/16,2001:db8::2:1/64. 2001:db8::2:1/64 IP address error: IP is not IPv4\"]")
-
-  )
-
-(defn read-pub-key
-  [file curve]
-  (f/try-all [pub (pem/read-pem! file)
-              _curve_ok? (when (not= (pem/get-type pub) curve)
-                           (f/fail "Curve of %s does not match CA curve:"
-                                   file curve))]
-             pub))
 
 
 (defn cert-name [name] (str name ".crt"))
@@ -725,11 +502,11 @@
               now (Instant/now)
               _expired (when (cert/expired-cert? ca-cert now)
                          (f/fail "ca certificate is expired"))
-              cert-not-after (compute-cert-not-after now not-after duration)
+              cert-not-after (cert/compute-cert-not-after now not-after duration)
               ip (net/parse-ipv4-cidr ip)
-              groups (parse-groups groups)
-              subnets (parse-subnets subnets)
-              cert-pub (read-pub-key in-pub ca-curve)
+              groups (cert/parse-groups groups)
+              subnets (cert/parse-subnets subnets)
+              cert-pub (cert/read-pub-key in-pub ca-curve)
               new-cert {:Details {:Name name
                                   :Ips [ip]
                                   :Groups groups

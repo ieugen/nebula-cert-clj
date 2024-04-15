@@ -2,6 +2,7 @@
   "Port of nebula cert.go"
   (:require [clojure.set :as cset]
             [clojure.string :as str]
+            [failjure.core :as f]
             [ieugen.nebula.crypto :as crypto]
             [ieugen.nebula.generated.cert :as gcert]
             [ieugen.nebula.net :as net]
@@ -11,7 +12,7 @@
             [malli.error :as me]
             [protojure.protobuf :as protojure])
   (:import (ieugen.nebula.generated.cert Cert$RawNebulaCertificate Cert$RawNebulaCertificateDetails)
-           (java.time Instant)
+           (java.time Instant Duration)
            (org.bouncycastle.util.io.pem PemObject)))
 
 (defn marshal-raw-cert
@@ -321,3 +322,115 @@
            :PublicKey PublicKey}]
     {:Details d
      :Signature Signature}))
+
+
+(defn compute-cert-not-after
+  "Cert NotAfter value is computed like:
+   - now + duration - when a duration is specified
+   - one second before given expiration of not-after
+
+   Does not check if now + duration is past not-after."
+  [^Instant now ^Instant not-after ^Duration duration]
+  (if (t/negative-or-zero-duration? duration)
+    (.minusSeconds not-after 1)
+    (.plus now duration)))
+
+^:rct/test
+(comment
+
+  (def my-now1 (Instant/parse "2024-04-10T09:00:00Z"))
+  (def my-not-after1 (.plusSeconds my-now1 300))
+
+  (str (compute-cert-not-after my-now1 my-not-after1 Duration/ZERO))
+  ;; => "2024-04-10T09:04:59Z"
+
+  (str (compute-cert-not-after my-now1 my-not-after1 (Duration/parse "PT-1s")))
+  ;; => "2024-04-10T09:04:59Z"
+
+  (str (compute-cert-not-after my-now1 my-not-after1 (Duration/parse "PT10s")))
+  ;; => "2024-04-10T09:00:10Z"
+
+  (str (compute-cert-not-after my-now1 my-not-after1 (Duration/parse "PT350s")))
+  ;; => "2024-04-10T09:05:50Z"
+  )
+
+(defn parse-groups
+  "Parse string of group names separated by colon , .
+   Return a collection of groups.
+   Trim group names"
+  [^String groups-str]
+  (when groups-str
+    (let [groups (str/split groups-str #",")
+          groups (map str/trim groups)]
+      (into [] (filter #(not (str/blank? %)) groups)))))
+
+^:rct/test
+(comment
+
+  (parse-groups nil)
+  ;; => nil
+
+  (parse-groups "")
+  ;; => []
+
+  (parse-groups "a")
+  ;; => ["a"]
+
+  (parse-groups "a,")
+  ;; => ["a"]
+
+  (parse-groups "a , b")
+  ;; => ["a" "b"]
+  )
+
+(defn parse-subnets
+  "Parse a string of subnets to a vector of ^IPv4Address .
+   Strings must be valid network addresses: ipv4 addres + network prefix
+   In case of failure returns a failjure.core.Failure "
+  [^String subnets-str]
+  (when-not (str/blank? subnets-str)
+    (let [subnets (str/split subnets-str #",")
+          subnets (map str/trim subnets)
+          subnets (map net/parse-ipv4-cidr subnets)
+          failed (filter f/failed? subnets)
+          failed? (pos-int? (count failed))]
+      (if failed?
+        (f/fail "Failed to parse subnets: %s. %s" subnets-str
+                (f/message (first failed)))
+        (into [] subnets)))))
+
+^:rct/test
+(comment
+
+  (parse-subnets nil)
+  ;; => nil
+
+  (parse-subnets "")
+  ;; => nil
+
+  (parse-subnets "a")
+  ;; => #failjure.core.Failure{:message "Failed to parse subnets: a. a IP address error: IP is not IPv4"}
+
+  (parse-subnets "192.168.0.1")
+  ;; => #failjure.core.Failure{:message "Failed to parse subnets: 192.168.0.1. Not a network address: 192.168.0.1"}
+
+  (parse-subnets "192.168.0.1/16,a")
+  ;; => #failjure.core.Failure{:message "Failed to parse subnets: 192.168.0.1/16,a. a IP address error: IP is not IPv4"}
+
+  (->> (parse-subnets "192.168.0.1/16,192.168.0.1/22")
+       (map str))
+  ;; => ("192.168.0.1/16" "192.168.0.1/22")
+
+  (->> (parse-subnets "192.168.0.1/16,2001:db8::2:1/64")
+       (map str))
+  ;; => ("[:message \"Failed to parse subnets: 192.168.0.1/16,2001:db8::2:1/64. 2001:db8::2:1/64 IP address error: IP is not IPv4\"]")
+  )
+
+
+(defn read-pub-key
+  [file curve]
+  (f/try-all [pub (pem/read-pem! file)
+              _curve_ok? (when (not= (pem/get-type pub) curve)
+                           (f/fail "Curve of %s does not match CA curve:"
+                                   file curve))]
+             pub))
