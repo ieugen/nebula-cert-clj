@@ -1,13 +1,18 @@
 (ns ieugen.nebula.cert
   "Port of nebula cert.go"
   (:require [clojure.set :as cset]
+            [clojure.string :as str]
             [ieugen.nebula.crypto :as crypto]
+            [ieugen.nebula.generated.cert :as gcert]
             [ieugen.nebula.net :as net]
+            [ieugen.nebula.pem :as pem]
             [ieugen.nebula.time :as t]
+            [malli.core :as m]
+            [malli.error :as me]
             [protojure.protobuf :as protojure])
   (:import (ieugen.nebula.generated.cert Cert$RawNebulaCertificate Cert$RawNebulaCertificateDetails)
-           (java.time Instant)))
-
+           (java.time Instant)
+           (org.bouncycastle.util.io.pem PemObject)))
 
 (defn marshal-raw-cert
   "Convert protojure a RawNebulaCertificate map to bytes.
@@ -124,3 +129,195 @@
     ;; if we reach this point, it matches
     true))
 
+
+(def NebulaCAPool-spec
+  [:map {:title "NebulaCAPool - holds CA certs and cert block list"}
+   [:CAs [:map string?]]
+   [:cert-block-list :sequential]])
+
+(defn ca-pool->add-ca
+  "Verify a CA and add it to the pool."
+  [ca-pool ca]
+  ;;TODO: verify pool with malli
+  ;;TODO: verify CA with malli
+  (let [details (:Details ca)
+        {:keys [IsCA PublicKey Name]} details]
+    (when-not IsCA
+      (throw (ex-info (str "Certificate is not a CA" Name) {:ca ca})))
+
+    (assoc-in ca-pool [:CAs "a"]  ca)))
+
+(def RawNebulaCertificateDetails-spec
+  "Malli spec for RawNebulaCertificateDetails"
+  ;; TODO: Improve validation
+  [:map
+   [:Name string?]
+   ;; TODO: Ips should be always odd:
+   ;; Ips, subnets and the netmask are store as 32bit int pairs
+   ;; They are stored as ip + netmask or subnet + netmask.
+   [:Ips [:vector int?]]
+   [:curve keyword?]
+   [:NotBefore int?]
+   [:NotAfter int?]
+   [:Subnets [:vector int?]]
+   [:IsCA boolean?]
+   [:Issuer any?]
+   [:Groups [:vector string?]]
+   [:PublicKey any?]])
+
+(def RawNebulaCertificate-spec
+  "Malli spec for RawNebulaCertificate"
+  ;;TODO: improve validation
+  [:map {:title "RawNebulaCertificate"}
+   [:Details {:title "Details"} #'RawNebulaCertificateDetails-spec
+    [:Signature any?]]])
+
+(defn valid-raw-nebula-certificate
+  [raw-cert]
+  (if (m/validate RawNebulaCertificate-spec raw-cert)
+    raw-cert
+    (let [cause (m/explain RawNebulaCertificate-spec raw-cert)]
+      (throw (ex-info (str "Certificate error " (me/humanize cause))
+                      {:cause cause})))))
+
+(defmethod pem/unmarshal "NEBULA CERTIFICATE"
+  ([^PemObject pem]
+   (let [raw-cert (Cert$RawNebulaCertificate/parseFrom (pem/get-content pem))
+         raw-cert (valid-raw-nebula-certificate raw-cert)]
+     raw-cert)))
+
+(defmethod pem/unmarshal "NEBULA ED25519 PRIVATE KEY"
+  ([^PemObject pem]
+   (let [raw ()])))
+
+
+(defn get-ca-for-cert
+  "Find the CA that issues the cert in the CA pool.
+   Return the CA or nil if not found."
+  [ca-pool user-cert]
+  (let [issuer (get-in user-cert [:Details :Issuer])
+        ca-map (:CAs ca-pool)
+        issuer-ca (get ca-map issuer)]
+    (when-not issuer
+      (ex-info "Missing issuer in certificate" {:cert user-cert}))
+    (if issuer-ca
+      issuer-ca
+      ;; Maybe throw if issuer CA is not found?
+      #_(ex-info "CA not found for certificate" {:cert user-cert})
+      nil)))
+
+(defn block-list-fingerprint
+  "Add a fingerpint to the cert block-list.
+   Return a new ca-pool."
+  [ca-pool fingerprint]
+  (assoc-in ca-pool [:cert-block-list fingerprint] {}))
+
+(defn get-fingerprints
+  "Return a vector of CA fingerprints."
+  [ca-pool]
+  (vec (keys (:cert-block-list ca-pool))))
+
+(defn pem->RawNebulaCertificate
+  "Parse a nebula cert from a ^PemObject"
+  [^PemObject pem]
+  (gcert/pb->RawNebulaCertificate (pem/get-content pem)))
+
+
+(defn cert-fingerprint
+  "Compute sha256 fingerprint as hex string."
+  [raw-cert]
+  (crypto/sha256sum+hex (marshal-raw-cert raw-cert)))
+
+(defn RawNebulaCertificate->NebulaCertificate
+  "Convert a raw nebula cert to a nebula cert.
+   Data types are parsed:
+   - timestamp -> Instant
+   - ip ints -> Ipv4Address"
+  [raw-cert]
+  (let [{:keys [Details Signature]} raw-cert
+        {:keys [Name curve IsCA NotAfter NotBefore
+                Subnets Ips Groups
+                ^bytes PublicKey
+                ^bytes Issuer]} Details
+        ips (into [] (net/int-pairs->ipv4 Ips))
+        subnets (into [] (net/int-pairs->ipv4 Subnets))
+        not-after (t/unix-timestamp->instant NotAfter)
+        not-before (t/unix-timestamp->instant NotBefore)
+        d {:Name Name
+           :curve curve
+           :IsCA IsCA
+           :NotAfter not-after
+           :NotBefore not-before
+           :Ips ips
+           :Subnets subnets
+           :Issuer Issuer
+           :Groups Groups
+           :PublicKey PublicKey}]
+    {:Details d
+     :Signature Signature}))
+
+(defn NebulaCertificate->RawNebulaCertificate
+  "Convert a raw nebula cert to a nebula cert.
+   Data types are parsed:
+   - timestamp -> Instant
+   - ip ints -> Ipv4Address"
+  [raw-cert]
+  (let [{:keys [Details Signature]} raw-cert
+        {:keys [Name curve IsCA NotAfter NotBefore
+                Subnets Ips Groups
+                ^bytes PublicKey
+                ^bytes Issuer]} Details
+        ips (into [] (net/addresses->ints Ips))
+        subnets (into [] (net/addresses->ints Subnets))
+        not-after (t/instant->unix-timestamp NotAfter)
+        not-before (t/instant->unix-timestamp NotBefore)
+        ;; Curve (str/upper-case (name Curve))
+        ;; Issuer (format-hex Issuer)
+        ;; PublicKey (format-hex PublicKey)
+        ;; Signature (format-hex Signature)
+        d {:Name Name
+           :curve curve
+           :IsCA IsCA
+           :NotAfter not-after
+           :NotBefore not-before
+           :Ips ips
+           :Subnets subnets
+           :Issuer Issuer
+           :Groups Groups
+           :PublicKey PublicKey}]
+    {:Details d
+     :Signature Signature}))
+
+(defn RawNebulaCertificate->NebulaCert4Print
+  "Convert a raw nebula cert to a nebula cert.
+   Data types are parsed:
+   - timestamp -> Instant
+   - ip ints -> Ipv4Address"
+  [raw-cert]
+  (let [{:keys [Details Signature]} raw-cert
+        {:keys [Name curve IsCA NotAfter NotBefore
+                Subnets Ips Groups
+                ^bytes PublicKey
+                ^bytes Issuer]} Details
+        ips (into [] (map str (net/int-pairs->ipv4 Ips)))
+        subnets (into [] (map str (net/int-pairs->ipv4 Subnets)))
+        not-after (t/unix-timestamp->instant NotAfter)
+        not-after (t/java-instant->iso-str not-after)
+        not-before (t/unix-timestamp->instant NotBefore)
+        not-before (t/java-instant->iso-str not-before)
+        curve (str/upper-case (name curve))
+        Issuer (crypto/format-hex Issuer)
+        PublicKey (crypto/format-hex PublicKey)
+        Signature (crypto/format-hex Signature)
+        d {:Name Name
+           :curve curve
+           :IsCA IsCA
+           :NotAfter not-after
+           :NotBefore not-before
+           :Ips ips
+           :Subnets subnets
+           :Issuer Issuer
+           :Groups Groups
+           :PublicKey PublicKey}]
+    {:Details d
+     :Signature Signature}))

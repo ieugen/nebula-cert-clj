@@ -1,8 +1,29 @@
 (ns ieugen.nebula.crypto
   (:import (java.nio.charset Charset StandardCharsets)
            (java.security MessageDigest)
-           (java.util HexFormat)))
+           (java.util HexFormat)
+           (org.bouncycastle.jce ECNamedCurveTable)))
 
+(defn ec-named-curves-seq
+  "Return a sequence of EC curves."
+  []
+  (enumeration-seq (ECNamedCurveTable/getNames)))
+
+(defn curve-str-kw
+  "Return a keyword from curve str or nil."
+  [curve]
+  (case curve
+    ("25519" "X25519" "Curve25519" "CURVE25519") :Curve25519
+    "P256" :P256
+    nil))
+
+^:rct/test
+(comment
+
+  (map curve-str-kw ["25519" "X25519" "Curve25519" "CURVE25519" "P256" "Invalid"])
+  ;; => (:Curve25519 :Curve25519 :Curve25519 :Curve25519 :P256 nil)
+
+  (ec-named-curves-seq))
 (def my-hex-fmt ^HexFormat (HexFormat/of))
 
 (defn format-hex

@@ -1,7 +1,9 @@
 (ns ieugen.nebula.time
   (:require [failjure.core :as f])
   (:import (java.time Duration
-                      Instant)))
+                      Instant
+                      OffsetDateTime ZoneOffset)
+           (java.time.format DateTimeFormatter)))
 
 
 (defn unix-timestamp->instant
@@ -26,9 +28,7 @@
   (-> (unix-timestamp->instant 1712916991)
       instant->unix-timestamp)
   ;; => 1712916991
-
   )
-
 
 
 (defn expired?
@@ -107,7 +107,6 @@
 
   (str (parse-duration "PT8760h0m0s"))
   ;; => "PT8760H"
-
   )
 
 (defn negative-or-zero-duration?
@@ -140,6 +139,10 @@
 
   (positive-duration? (Duration/parse "PT-1s"))
   ;; => false
-
   )
 
+(defn java-instant->iso-str
+  "Format a java ^Instant to ISO DateTime"
+  [^Instant instant]
+  (let [d (OffsetDateTime/ofInstant instant (ZoneOffset/systemDefault))]
+    (.format d DateTimeFormatter/ISO_OFFSET_DATE_TIME)))

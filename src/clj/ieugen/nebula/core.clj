@@ -16,12 +16,7 @@
   (:import (ieugen.nebula.generated.cert Cert$RawNebulaCertificate Cert$RawNebulaCertificateDetails)
            (inet.ipaddr.ipv4 IPv4Address)
            (java.security SecureRandom Security)
-           (java.time
-            Duration
-            Instant
-            OffsetDateTime
-            ZoneOffset)
-           (java.time.format DateTimeFormatter)
+           (java.time Duration Instant)
            (java.util Arrays)
            (org.bouncycastle.crypto Signer)
            (org.bouncycastle.crypto AsymmetricCipherKeyPair)
@@ -68,49 +63,6 @@
    :ECDSAP256PrivateKeyBanner "NEBULA ECDSA P256 PRIVATE KEY"})
 
 
-(def RawNebulaCertificateDetails-spec
-  "Malli spec for RawNebulaCertificateDetails"
-  ;; TODO: Improve validation
-  [:map
-   [:Name string?]
-   ;; TODO: Ips should be always odd:
-   ;; Ips, subnets and the netmask are store as 32bit int pairs
-   ;; They are stored as ip + netmask or subnet + netmask.
-   [:Ips [:vector int?]]
-   [:curve keyword?]
-   [:NotBefore int?]
-   [:NotAfter int?]
-   [:Subnets [:vector int?]]
-   [:IsCA boolean?]
-   [:Issuer any?]
-   [:Groups [:vector string?]]
-   [:PublicKey any?]])
-
-(def RawNebulaCertificate-spec
-  "Malli spec for RawNebulaCertificate"
-  ;;TODO: improve validation
-  [:map {:title "RawNebulaCertificate"}
-   [:Details {:title "Details"} #'RawNebulaCertificateDetails-spec
-    [:Signature any?]]])
-
-(defn valid-raw-nebula-certificate
-  [raw-cert]
-  (if (m/validate RawNebulaCertificate-spec raw-cert)
-    raw-cert
-    (let [cause (m/explain RawNebulaCertificate-spec raw-cert)]
-      (throw (ex-info (str "Certificate error " (me/humanize cause))
-                      {:cause cause})))))
-
-(defmethod pem/unmarshal "NEBULA CERTIFICATE"
-  ([^PemObject pem]
-   (let [raw-cert (Cert$RawNebulaCertificate/parseFrom (pem/get-content pem))
-         raw-cert (valid-raw-nebula-certificate raw-cert)]
-     raw-cert)))
-
-(defmethod pem/unmarshal "NEBULA ED25519 PRIVATE KEY"
-  ([^PemObject pem]
-   (let [raw ()])))
-
 (defn file->bytes
   [file]
   (with-open [xin (io/input-stream file)
@@ -122,27 +74,6 @@
   [file ^bytes bytes]
   (with-open [f (io/output-stream file)]
     (.write f bytes)))
-
-(defn ec-named-curves-seq
-  "Return a sequence of EC curves."
-  []
-  (enumeration-seq (ECNamedCurveTable/getNames)))
-
-(defn curve-str-kw
-  "Return a keyword from curve str or nil."
-  [curve]
-  (case curve
-    ("25519" "X25519" "Curve25519" "CURVE25519") :Curve25519
-    "P256" :P256
-    nil))
-
-^:rct/test
-(comment
-
-  (map curve-str-kw ["25519" "X25519" "Curve25519" "CURVE25519" "P256" "Invalid"])
-  ;; => (:Curve25519 :Curve25519 :Curve25519 :Curve25519 :P256 nil)
-
-  (ec-named-curves-seq))
 
 (defmulti keygen
   "Implement keygeneration for supported key-pair types.
@@ -251,49 +182,6 @@
         pem (PemObject. banner key-bytes)]
     (pem/write-pem! pem file)))
 
-(def NebulaCAPool-spec
-  [:map {:title "NebulaCAPool - holds CA certs and cert block list"}
-   [:CAs [:map string?]]
-   [:cert-block-list :sequential]])
-
-(defn ca-pool->add-ca
-  "Verify a CA and add it to the pool."
-  [ca-pool ca]
-  ;;TODO: verify pool with malli
-  ;;TODO: verify CA with malli
-  (let [details (:Details ca)
-        {:keys [IsCA PublicKey Name]} details]
-    (when-not IsCA
-      (throw (ex-info (str "Certificate is not a CA" Name) {:ca ca})))
-
-    (assoc-in ca-pool [:CAs "a"]  ca)))
-
-(defn get-ca-for-cert
-  "Find the CA that issues the cert in the CA pool.
-   Return the CA or nil if not found."
-  [ca-pool user-cert]
-  (let [issuer (get-in user-cert [:Details :Issuer])
-        ca-map (:CAs ca-pool)
-        issuer-ca (get ca-map issuer)]
-    (when-not issuer
-      (ex-info "Missing issuer in certificate" {:cert user-cert}))
-    (if issuer-ca
-      issuer-ca
-      ;; Maybe throw if issuer CA is not found?
-      #_(ex-info "CA not found for certificate" {:cert user-cert})
-      nil)))
-
-(defn block-list-fingerprint
-  "Add a fingerpint to the cert block-list.
-   Return a new ca-pool."
-  [ca-pool fingerprint]
-  (assoc-in ca-pool [:cert-block-list fingerprint] {}))
-
-(defn get-fingerprints
-  "Return a vector of CA fingerprints."
-  [ca-pool]
-  (vec (keys (:cert-block-list ca-pool))))
-
 (defn ^:deprecated verify-cert-signature
   "Verify user certificate is signed by the certificate authority.
 
@@ -377,7 +265,7 @@
    - etc"
   [ca-pool cert time]
   (let [block-listed? (cert/cert-is-block-listed? ca-pool cert)
-        signer (get-ca-for-cert ca-pool cert)
+        signer (cert/get-ca-for-cert ca-pool cert)
         signer-pubkey (get-in signer [:Details :PublicKey])
         expired-ca? (cert/expired-cert? signer time)
         expired-cert? (cert/expired-cert? cert time)]
@@ -393,12 +281,6 @@
                                             :cert cert})))
     (cert/check-root-constrains cert signer)))
 
-
-(defn pem->RawNebulaCertificate
-  "Parse a nebula cert from a ^PemObject"
-  [^PemObject pem]
-  (gcert/pb->RawNebulaCertificate (pem/get-content pem)))
-
 (defn ^:deprecated verify-cert-files!
   "Verify a certificate is valid and issued by a specific CA.
   The CA file can contain multiple certs.
@@ -413,8 +295,8 @@
                     {:path user-cert-file})))
   (let [user-pem (pem/read-pem! user-cert-file)
         ca-cert-pems (pem/read-pems! ca-cert-file)
-        user-cert (pem->RawNebulaCertificate user-pem)
-        ca-certs (into [] (map pem->RawNebulaCertificate ca-cert-pems))
+        user-cert (cert/pem->RawNebulaCertificate user-pem)
+        ca-certs (into [] (map cert/pem->RawNebulaCertificate ca-cert-pems))
         ;; Find CA of cert in list by issuer
         ca-cert (first ca-certs)]
     ;; TODO: Implement other certificate and CA checks
@@ -474,110 +356,6 @@
 ;; Listă de certificate semnate
 ;; Revocare?
 
-(defn java-instant->iso-str
-  "Format a java ^Instant to ISO DateTime"
-  [^Instant instant]
-  (let [d (OffsetDateTime/ofInstant instant (ZoneOffset/systemDefault))]
-    (.format d DateTimeFormatter/ISO_OFFSET_DATE_TIME)))
-
-(defn cert-fingerprint
-  "Compute sha256 fingerprint as hex string."
-  [raw-cert]
-  (crypto/sha256sum+hex (cert/marshal-raw-cert raw-cert)))
-
-(defn RawNebulaCertificate->NebulaCert4Print
-  "Convert a raw nebula cert to a nebula cert.
-   Data types are parsed:
-   - timestamp -> Instant
-   - ip ints -> Ipv4Address"
-  [raw-cert]
-  (let [{:keys [Details Signature]} raw-cert
-        {:keys [Name curve IsCA NotAfter NotBefore
-                Subnets Ips Groups
-                ^bytes PublicKey
-                ^bytes Issuer]} Details
-        ips (into [] (map str (net/int-pairs->ipv4 Ips)))
-        subnets (into [] (map str (net/int-pairs->ipv4 Subnets)))
-        not-after (t/unix-timestamp->instant NotAfter)
-        not-after (java-instant->iso-str not-after)
-        not-before (t/unix-timestamp->instant NotBefore)
-        not-before (java-instant->iso-str not-before)
-        curve (str/upper-case (name curve))
-        Issuer (crypto/format-hex Issuer)
-        PublicKey (crypto/format-hex PublicKey)
-        Signature (crypto/format-hex Signature)
-        d {:Name Name
-           :curve curve
-           :IsCA IsCA
-           :NotAfter not-after
-           :NotBefore not-before
-           :Ips ips
-           :Subnets subnets
-           :Issuer Issuer
-           :Groups Groups
-           :PublicKey PublicKey}]
-    {:Details d
-     :Signature Signature}))
-
-(defn RawNebulaCertificate->NebulaCertificate
-  "Convert a raw nebula cert to a nebula cert.
-   Data types are parsed:
-   - timestamp -> Instant
-   - ip ints -> Ipv4Address"
-  [raw-cert]
-  (let [{:keys [Details Signature]} raw-cert
-        {:keys [Name curve IsCA NotAfter NotBefore
-                Subnets Ips Groups
-                ^bytes PublicKey
-                ^bytes Issuer]} Details
-        ips (into [] (net/int-pairs->ipv4 Ips))
-        subnets (into [] (net/int-pairs->ipv4 Subnets))
-        not-after (t/unix-timestamp->instant NotAfter)
-        not-before (t/unix-timestamp->instant NotBefore)
-        d {:Name Name
-           :curve curve
-           :IsCA IsCA
-           :NotAfter not-after
-           :NotBefore not-before
-           :Ips ips
-           :Subnets subnets
-           :Issuer Issuer
-           :Groups Groups
-           :PublicKey PublicKey}]
-    {:Details d
-     :Signature Signature}))
-(defn NebulaCertificate->RawNebulaCertificate
-  "Convert a raw nebula cert to a nebula cert.
-   Data types are parsed:
-   - timestamp -> Instant
-   - ip ints -> Ipv4Address"
-  [raw-cert]
-  (let [{:keys [Details Signature]} raw-cert
-        {:keys [Name curve IsCA NotAfter NotBefore
-                Subnets Ips Groups
-                ^bytes PublicKey
-                ^bytes Issuer]} Details
-        ips (into [] (net/addresses->ints Ips))
-        subnets (into [] (net/addresses->ints Subnets))
-        not-after (t/instant->unix-timestamp NotAfter)
-        not-before (t/instant->unix-timestamp NotBefore)
-        ;; Curve (str/upper-case (name Curve))
-        ;; Issuer (format-hex Issuer)
-        ;; PublicKey (format-hex PublicKey)
-        ;; Signature (format-hex Signature)
-        d {:Name Name
-           :curve curve
-           :IsCA IsCA
-           :NotAfter not-after
-           :NotBefore not-before
-           :Ips ips
-           :Subnets subnets
-           :Issuer Issuer
-           :Groups Groups
-           :PublicKey PublicKey}]
-    {:Details d
-     :Signature Signature}))
-
 (def cert-json-mapper
   (j/object-mapper
    {:encode-key-fn (fn [k] (csk/->camelCase k))}))
@@ -626,9 +404,9 @@
   "CLI command - print details from a certificate."
   [cert-path & {:keys [json out-qr] :as opts}]
   (let [cert-pem (pem/read-pem! cert-path)
-        cert (pem->RawNebulaCertificate cert-pem)
-        fingerpint (cert-fingerprint cert)
-        c (RawNebulaCertificate->NebulaCert4Print cert)
+        cert (cert/pem->RawNebulaCertificate cert-pem)
+        fingerpint (cert/cert-fingerprint cert)
+        c (cert/RawNebulaCertificate->NebulaCert4Print cert)
         c (assoc c :Fingerprint fingerpint)]
     (if json
       (j/write-value-as-string c cert-json-mapper)
@@ -636,7 +414,7 @@
 
 (comment
 
-  (def cert (pem->RawNebulaCertificate
+  (def cert (cert/pem->RawNebulaCertificate
              (pem/read-pem! "sample-certs/sample-ca01.crt")))
   cert
 
@@ -650,10 +428,10 @@
       :PublicKey
       crypto/format-hex)
 
-  (-> (RawNebulaCertificate->NebulaCertificate cert))
+  (-> (cert/RawNebulaCertificate->NebulaCertificate cert))
 
-  (-> (RawNebulaCertificate->NebulaCertificate cert)
-      (NebulaCertificate->RawNebulaCertificate))
+  (-> (cert/RawNebulaCertificate->NebulaCertificate cert)
+      (cert/NebulaCertificate->RawNebulaCertificate))
 
 
   )
@@ -661,7 +439,7 @@
 (defn cli-keygen
   "CLI command - generate nebula keys."
   [curve out-key out-pub & _opts]
-  (let [curve (curve-str-kw curve)
+  (let [curve (crypto/curve-str-kw curve)
         key-pair (keygen {:key-type curve})]
     (write-private key-pair out-key)
     (write-public key-pair out-pub)))
@@ -693,7 +471,7 @@
 
   (def my-ed25519-ca-pem (pem/read-pem! "sample-certs/sample-ca01.crt"))
 
-  (def my-ed25519-ca-cert (pem->RawNebulaCertificate my-ed25519-ca-pem))
+  (def my-ed25519-ca-cert (cert/pem->RawNebulaCertificate my-ed25519-ca-pem))
   (def my-ed25519-pub-key (-> my-ed25519-ca-cert :Details :PublicKey))
 
   (ed25519-25519-check-private-key my-ed25519-private-key my-ed25519-pub-key)
@@ -939,11 +717,11 @@
               _ (when (= ca-curve "P256")
                   (f/fail  "P256 curve not implemented."))
               ca-cert-pem (pem/read-pem! ca-crt-path)
-              raw-ca-cert (pem->RawNebulaCertificate ca-cert-pem)
-              ca-cert (RawNebulaCertificate->NebulaCert4Print raw-ca-cert)
+              raw-ca-cert (cert/pem->RawNebulaCertificate ca-cert-pem)
+              ca-cert (cert/RawNebulaCertificate->NebulaCert4Print raw-ca-cert)
               not-after (get-in ca-cert [:Details :NotAfter])
               _keys_match (verify-private-key ca-cert ca-curve ca-key-bytes)
-              issuer (cert-fingerprint raw-ca-cert)
+              issuer (cert/cert-fingerprint raw-ca-cert)
               now (Instant/now)
               _expired (when (cert/expired-cert? ca-cert now)
                          (f/fail "ca certificate is expired"))
@@ -1061,7 +839,7 @@
 
   (bean ca-crt)
 
-  (def rc (valid-raw-nebula-certificate
+  (def rc (cert/valid-raw-nebula-certificate
            (gcert/pb->RawNebulaCertificate (.getContent ca-crt))))
 
   (IPv4Address. 1684275200 (Integer. (- 32 (Integer/numberOfTrailingZeros -256))))
