@@ -5,3 +5,5 @@
 .calva/output-window/
 .nrepl-port
 target/
+
+.calva/repl.calva-repl

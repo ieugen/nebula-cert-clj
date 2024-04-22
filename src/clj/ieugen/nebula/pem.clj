@@ -1,6 +1,7 @@
 (ns ieugen.nebula.pem
   "Protocol and utilities for working with PEM files and data."
-  (:require [clojure.java.io :as io])
+  (:require [clojure.java.io :as io]
+            [failjure.core :as f])
   (:import
    (org.bouncycastle.util.io.pem PemObject PemReader PemWriter)))
 
@@ -47,6 +48,17 @@
 
   (count (read-pems! "sample-certs/multiple-ca.crt")) ;;=> 2
   )
+
+
+(defn read-pem-type!
+  "Return the bytes for a PEM file if it has the given type.
+   Returns a Failure if it does not."
+  [type rdr]
+  (let [p (read-pem! rdr)
+        p-type (get-type p)]
+    (if (= type p-type)
+      (get-content p)
+      (f/fail "Expected PEM type to be %s, found %s" type p-type))))
 
 (defn write-pem!
   "Write a PEM file to disk.

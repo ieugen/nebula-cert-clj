@@ -16,7 +16,9 @@
            (org.bouncycastle.crypto.util SubjectPublicKeyInfoFactory)
            (org.bouncycastle.jce ECNamedCurveTable)
            (org.bouncycastle.jce.provider BouncyCastleProvider)
-           (org.bouncycastle.math.ec.rfc7748 X25519)))
+           (org.bouncycastle.math.ec.rfc7748 X25519)) 
+  (:require [ieugen.nebula.pem :as pem]
+            [failjure.core :as f]))
 
 (Security/addProvider (BouncyCastleProvider.))
 
@@ -171,3 +173,49 @@
 (defmulti write-public
   "Given a keypair map, write public key to file"
   (fn [key-pair _file & _opts] (:key-type key-pair)))
+
+(defn sign-ed25519
+  "Sign bytes using a private key and aED25519 algorithm."
+  [key-bytes raw-bytes]
+  (let [priv-key-params (Ed25519PrivateKeyParameters. key-bytes 0)
+        signer ^Ed25519Signer (doto (Ed25519Signer.)
+                                (.init true priv-key-params)
+                                (.update raw-bytes 0 (count raw-bytes)))]
+    (.generateSignature signer)))
+
+
+(defn sign
+  "Sign bytes using a private key"
+  [curve key-bytes raw-bytes]
+  (case curve
+    :curve25519 (sign-ed25519 key-bytes raw-bytes)
+    :P256 (f/fail "P256 signature is not supported")
+    (f/fail "Curve %s is not supported" curve)))
+
+
+^:rct/test
+(comment
+
+  (def ed25519-ca-key (pem/get-content (pem/read-pem! "sample-certs/sample-ca01.key")))
+  (->
+   (sign-ed25519 ed25519-ca-key (str->bytes "hello"))
+   format-hex)
+  ;; => "d6cab690096edf78732165093948e608346a8214df26b8efa40bab7f807cb06b64d9d1d5de979503a507c258c4277db6fb3ca5a26779bad6646c54826ae96507"
+  
+
+  (->
+   (sign :curve25519 ed25519-ca-key (str->bytes "hello"))
+   format-hex)
+  ;; => "d6cab690096edf78732165093948e608346a8214df26b8efa40bab7f807cb06b64d9d1d5de979503a507c258c4277db6fb3ca5a26779bad6646c54826ae96507"
+  
+  ( ->
+   (sign :P256 nil nil)
+   f/message)
+  ;; => "P256 signature is not supported" 
+  
+  (->
+   (sign :P256aaa nil nil)
+   f/message)
+  ;; => "Curve :P256aaa is not supported" 
+  
+  )

@@ -20,8 +20,8 @@
   Uses double serializations since protojure has a serialization bug with
   https://github.com/protojure/lib/issues/164
   Once it's fixed we can use only protojure."
-  [details]
-  (let [d-bytes ^bytes (protojure/->pb details)
+  [cert]
+  (let [d-bytes ^bytes (protojure/->pb cert)
         cert2 (Cert$RawNebulaCertificate/parseFrom d-bytes)
         d-bytes2 (.toByteArray cert2)]
     d-bytes2))
@@ -218,78 +218,94 @@
   [ca-pool]
   (vec (keys (:cert-block-list ca-pool))))
 
-(defn pem->RawNebulaCertificate
+(defn pem->RawCertificate
   "Parse a nebula cert from a ^PemObject"
   [^PemObject pem]
   (gcert/pb->RawNebulaCertificate (pem/get-content pem)))
 
+(defn bytes-RawCertificate
+  [^bytes cert]
+  (gcert/pb->RawNebulaCertificate cert))
 
 (defn cert-fingerprint
   "Compute sha256 fingerprint as hex string."
   [raw-cert]
   (crypto/sha256sum+hex (marshal-raw-cert raw-cert)))
 
-(defn RawNebulaCertificate->NebulaCertificate
-  "Convert a raw nebula cert to a nebula cert.
-   Data types are parsed:
-   - timestamp -> Instant
-   - ip ints -> Ipv4Address"
-  [raw-cert]
-  (let [{:keys [Details Signature]} raw-cert
-        {:keys [Name curve IsCA NotAfter NotBefore
+
+(defn RawCertificateDetails->CertificateDetails
+  [raw-details]
+  (let [{:keys [Name curve IsCA NotAfter NotBefore
                 Subnets Ips Groups
                 ^bytes PublicKey
-                ^bytes Issuer]} Details
+                ^bytes Issuer]} raw-details
         ips (into [] (net/int-pairs->ipv4 Ips))
         subnets (into [] (net/int-pairs->ipv4 Subnets))
         not-after (t/unix-timestamp->instant NotAfter)
         not-before (t/unix-timestamp->instant NotBefore)
-        d {:Name Name
-           :curve curve
-           :IsCA IsCA
-           :NotAfter not-after
-           :NotBefore not-before
-           :Ips ips
-           :Subnets subnets
-           :Issuer Issuer
-           :Groups Groups
-           :PublicKey PublicKey}]
-    {:Details d
-     :Signature Signature}))
+        details {:Name Name
+                 :curve curve
+                 :IsCA IsCA
+                 :NotAfter not-after
+                 :NotBefore not-before
+                 :Ips ips
+                 :Subnets subnets
+                 :Issuer Issuer
+                 :Groups Groups
+                 :PublicKey PublicKey}]
+    details))
 
-(defn NebulaCertificate->RawNebulaCertificate
+
+(defn RawCertificate->Certificate
   "Convert a raw nebula cert to a nebula cert.
    Data types are parsed:
    - timestamp -> Instant
    - ip ints -> Ipv4Address"
   [raw-cert]
   (let [{:keys [Details Signature]} raw-cert
-        {:keys [Name curve IsCA NotAfter NotBefore
+        details (RawCertificateDetails->CertificateDetails Details)]
+    {:Details details
+     :Signature Signature}))
+
+(defn CertificateDetails->RawCertificateDetails
+  [details]
+  (let [{:keys [Name curve IsCA NotAfter NotBefore
                 Subnets Ips Groups
                 ^bytes PublicKey
-                ^bytes Issuer]} Details
+                ^bytes Issuer]} details
         ips (into [] (net/addresses->ints Ips))
         subnets (into [] (net/addresses->ints Subnets))
         not-after (t/instant->unix-timestamp NotAfter)
         not-before (t/instant->unix-timestamp NotBefore)
+        raw-details {:Name Name
+                     :curve curve
+                     :IsCA IsCA
+                     :NotAfter not-after
+                     :NotBefore not-before
+                     :Ips ips
+                     :Subnets subnets
+                     :Issuer Issuer
+                     :Groups Groups
+                     :PublicKey PublicKey}]
+    raw-details))
+
+
+(defn Certificate->RawCertificate
+  "Convert a raw nebula cert to a nebula cert.
+   Data types are parsed:
+   - timestamp -> Instant
+   - ip ints -> Ipv4Address"
+  [raw-cert]
+  (let [{:keys [Details Signature]} raw-cert
         ;; Curve (str/upper-case (name Curve))
         ;; Issuer (format-hex Issuer)
         ;; PublicKey (format-hex PublicKey)
         ;; Signature (format-hex Signature)
-        d {:Name Name
-           :curve curve
-           :IsCA IsCA
-           :NotAfter not-after
-           :NotBefore not-before
-           :Ips ips
-           :Subnets subnets
-           :Issuer Issuer
-           :Groups Groups
-           :PublicKey PublicKey}]
-    {:Details d
+        raw-details  (CertificateDetails->RawCertificateDetails Details)]
+    {:Details raw-details
      :Signature Signature}))
 
-(defn RawNebulaCertificate->NebulaCert4Print
+(defn RawCertificate->Certificate4Print
   "Convert a raw nebula cert to a nebula cert.
    Data types are parsed:
    - timestamp -> Instant
@@ -323,6 +339,13 @@
     {:Details d
      :Signature Signature}))
 
+
+(defn marshal-cert
+  "Marshal a cert to bytes.
+   Will convert cert -> raw cert"
+  [cert]
+  (let [raw-cert (Certificate->RawCertificate cert)]
+    (marshal-raw-cert raw-cert)))
 
 (defn compute-cert-not-after
   "Cert NotAfter value is computed like:

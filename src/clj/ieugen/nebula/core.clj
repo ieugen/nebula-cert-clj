@@ -184,8 +184,8 @@
                     {:path user-cert-file})))
   (let [user-pem (pem/read-pem! user-cert-file)
         ca-cert-pems (pem/read-pems! ca-cert-file)
-        user-cert (cert/pem->RawNebulaCertificate user-pem)
-        ca-certs (into [] (map cert/pem->RawNebulaCertificate ca-cert-pems))
+        user-cert (cert/pem->RawCertificate user-pem)
+        ca-certs (into [] (map cert/pem->RawCertificate ca-cert-pems))
         ;; Find CA of cert in list by issuer
         ca-cert (first ca-certs)]
     ;; TODO: Implement other certificate and CA checks
@@ -293,9 +293,9 @@
   "CLI command - print details from a certificate."
   [cert-path & {:keys [json out-qr] :as opts}]
   (let [cert-pem (pem/read-pem! cert-path)
-        cert (cert/pem->RawNebulaCertificate cert-pem)
+        cert (cert/pem->RawCertificate cert-pem)
         fingerpint (cert/cert-fingerprint cert)
-        c (cert/RawNebulaCertificate->NebulaCert4Print cert)
+        c (cert/RawCertificate->Certificate4Print cert)
         c (assoc c :Fingerprint fingerpint)]
     (if json
       (j/write-value-as-string c cert-json-mapper)
@@ -303,7 +303,7 @@
 
 (comment
 
-  (def cert (cert/pem->RawNebulaCertificate
+  (def cert (cert/pem->RawCertificate
              (pem/read-pem! "sample-certs/sample-ca01.crt")))
   cert
 
@@ -317,10 +317,10 @@
       :PublicKey
       crypto/format-hex)
 
-  (-> (cert/RawNebulaCertificate->NebulaCertificate cert))
+  (-> (cert/RawCertificate->Certificate cert))
 
-  (-> (cert/RawNebulaCertificate->NebulaCertificate cert)
-      (cert/NebulaCertificate->RawNebulaCertificate))
+  (-> (cert/RawCertificate->Certificate cert)
+      (cert/Certificate->RawCertificate))
 
 
   )
@@ -360,7 +360,7 @@
 
   (def my-ed25519-ca-pem (pem/read-pem! "sample-certs/sample-ca01.crt"))
 
-  (def my-ed25519-ca-cert (cert/pem->RawNebulaCertificate my-ed25519-ca-pem))
+  (def my-ed25519-ca-cert (cert/pem->RawCertificate my-ed25519-ca-pem))
   (def my-ed25519-pub-key (-> my-ed25519-ca-cert :Details :PublicKey))
 
   (ed25519-25519-check-private-key my-ed25519-private-key my-ed25519-pub-key)
@@ -474,12 +474,25 @@
   )
 
 (defn sign-cert
-  [nebula-cert ^String curve ^bytes private-key]
-  (f/try-all [{:keys [Details Issueer]} nebula-cert
-              {:keys [Curve]} Details
-              _curve_ok? (when-not (= curve Curve)
-                           (f/fail "Curve in cert and private key supplied don't match"))]
-             ""))
+  "Sign a certificate.
+   
+   Process:
+   - check curve
+   - marshal raw details to bytes
+   - compute signature using the specific curve
+   
+   Enhance the certificate with the signature.
+   
+   Return a Failure in case of error."
+  [nebula-cert ^String key-curve ^bytes private-key]
+  (f/try-all [Details (:Details nebula-cert)
+              cert-curve (:curve Details)
+              _curve_ok? (when-not (= key-curve cert-curve)
+                           (f/fail "Curve in cert and private key supplied don't match"))
+              raw-details (cert/CertificateDetails->RawCertificateDetails Details)
+              raw-detail-bytes (cert/marshal-raw-cert-details raw-details)
+              signature (crypto/sign cert-curve private-key raw-detail-bytes)]
+             (assoc nebula-cert :Signature signature)))
 
 (defn cli-sign
   "Sign a user certificate given a path to CA key and cert and some options.
@@ -494,8 +507,8 @@
               _ (when (= ca-curve "P256")
                   (f/fail  "P256 curve not implemented."))
               ca-cert-pem (pem/read-pem! ca-crt-path)
-              raw-ca-cert (cert/pem->RawNebulaCertificate ca-cert-pem)
-              ca-cert (cert/RawNebulaCertificate->NebulaCert4Print raw-ca-cert)
+              raw-ca-cert (cert/pem->RawCertificate ca-cert-pem)
+              ca-cert (cert/RawCertificate->Certificate4Print raw-ca-cert)
               not-after (get-in ca-cert [:Details :NotAfter])
               _keys_match (verify-private-key ca-cert ca-curve ca-key-bytes)
               issuer (cert/cert-fingerprint raw-ca-cert)
@@ -517,39 +530,16 @@
                                   :IsCA false
                                   :Issuer issuer
                                   :curve ca-curve}}
-              _new-cert (cert/check-root-constrains new-cert ca-cert)
+              new-cert (cert/check-root-constrains new-cert ca-cert)
               _out-crt (when (file-exists? out-crt)
                          (f/fail "Refusing to overwrite existing cert: %s" out-crt))
-              details-bytes ""
-              new-cert-details ""
-              priv-key-params (Ed25519PrivateKeyParameters. ca-key-bytes 0)
-              signer ^Signer (doto (Ed25519Signer.)
-                               (.init true priv-key-params)
-                               (.update details-bytes 0 (count details-bytes)))
-              ;; signature (.generateSignature signer)
-              pem-data (cert/marshal-raw-cert new-cert-details)
+              new-cert+signature (sign-cert new-cert ca-curve ca-key-bytes)
+              pem-data (cert/marshal-raw-cert new-cert+signature)
               pem (PemObject. "NEBULA CERTIFICATE" pem-data)]
              (pem/write-pem! pem out-crt)))
 
 (comment
-
-
-
-
-  (f/attempt-all [x 2
-                  y (+ x 4)]
-                 y
-                 (f/when-failed [e]
-                                (f/message e)))
-
-
-  (f/try-all [a "a"
-              b (str a "x")
-              c (throw (ex-info (str "fail" a b) {}))
-              d (str "c " c)]
-             d)
-
-
+  
   (def ca-key (io/reader "aa.key"))
 
   (println ca-key)
@@ -633,4 +623,5 @@
   (mg/generate [:map-of {#"^x-\w*" string?
                          :min 0 :max 3}  #"^x-\w*" :string])
 
-  (mg/generate #"^x-\w*"))
+  (mg/generate #"^x-\w*")
+  )
