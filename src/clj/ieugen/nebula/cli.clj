@@ -112,6 +112,7 @@
                                      (str "Optional: How long the cert should be valid for. "
                                           "Default is 1s before the signing cert expires."
                                           "Valid time units are seconds: 's', minutes: 'm' and hours: 'h'")
+                                     :default (time/parse-duration "0s")
                                      :parse time/parse-duration}
               "--groups STRING" "Optional: comma separated list of groups."
               "--in-pub FILE" "Optional (if out-key not set): path to read a previously generated public key"

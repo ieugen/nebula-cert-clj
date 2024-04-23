@@ -51,9 +51,13 @@
   (ec-named-curves-seq))
 (def my-hex-fmt ^HexFormat (HexFormat/of))
 
-(defn format-hex
+(defn bytes->hex
   [bytes]
   (.formatHex ^HexFormat my-hex-fmt bytes))
+
+(defn hex->bytes
+  [hex-str]
+  (.parseHex ^HexFormat my-hex-fmt hex-str))
 
 (defn sha256sum
   [^bytes bytes]
@@ -62,7 +66,7 @@
 
 (defn sha256sum+hex
   [^bytes bytes]
-  (format-hex (sha256sum bytes)))
+  (bytes->hex (sha256sum bytes)))
 
 (defn str->bytes
   ([^String str]
@@ -73,7 +77,7 @@
 ^:rct/test
 (comment
 
-  (format-hex (str->bytes "nebula!"))
+  (bytes->hex (str->bytes "nebula!"))
   ;; => "6e6562756c6121"
 
   (sha256sum+hex (str->bytes "nebula!"))
@@ -199,13 +203,13 @@
   (def ed25519-ca-key (pem/get-content (pem/read-pem! "sample-certs/sample-ca01.key")))
   (->
    (sign-ed25519 ed25519-ca-key (str->bytes "hello"))
-   format-hex)
+   bytes->hex)
   ;; => "d6cab690096edf78732165093948e608346a8214df26b8efa40bab7f807cb06b64d9d1d5de979503a507c258c4277db6fb3ca5a26779bad6646c54826ae96507"
   
 
   (->
    (sign :curve25519 ed25519-ca-key (str->bytes "hello"))
-   format-hex)
+   bytes->hex)
   ;; => "d6cab690096edf78732165093948e608346a8214df26b8efa40bab7f807cb06b64d9d1d5de979503a507c258c4277db6fb3ca5a26779bad6646c54826ae96507"
   
   ( ->

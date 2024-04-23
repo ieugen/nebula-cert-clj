@@ -61,28 +61,24 @@
 (defn expired-cert?
   [cert ^Instant time]
   (let [details (:Details cert)
-        {:keys [NotBefore NotAfter]} details
-        not-before (t/unix-timestamp->instant NotBefore)
-        not-after (t/unix-timestamp->instant NotAfter)]
-    (t/expired? not-before not-after time)))
+        {:keys [NotBefore NotAfter]} details]
+    (t/expired? NotBefore NotAfter time)))
 
 (defn check-root-constrains
   "Throw an error if cert violates constraints
-   set by the CA that signed it: ips, groups, subnets, etc"
+   set by the CA that signed it: ips, groups, subnets, etc.
+   
+   We expect to receive parsed data, not RawCertificate."
   [cert signer]
   (let [signer-not-after (get-in signer [:Details :NotAfter])
-        signer-not-after ^Instant (t/unix-timestamp->instant signer-not-after)
         cert-not-after (get-in cert [:Details :NotAfter])
-        cert-not-after ^Instant (t/unix-timestamp->instant cert-not-after)
         valid-after-signer? (-> cert-not-after (.isAfter signer-not-after))]
     ;; Make sure cert was not valid before signer
     (when valid-after-signer?
       (throw (ex-info "Certificate expires after signing certificate"
                       {:cert cert :ca signer}))))
   (let [signer-not-before (get-in signer [:Details :NotBefore])
-        signer-not-before ^Instant (t/unix-timestamp->instant signer-not-before)
         cert-not-before (get-in cert [:Details :NotBefore])
-        cert-not-before ^Instant (t/unix-timestamp->instant cert-not-before)
         valid-before-signer? (-> cert-not-before (.isBefore signer-not-before))]
     ;; Make sure cert isn't valid after signer
     (when valid-before-signer?
@@ -103,10 +99,8 @@
   (let [signer-ips (get-in signer [:Details :Ips])]
     ;; If the signer has a limited set of ip ranges to issue from,
     ;; make sure the cert only contains a subset
-    (when (< 0 signer-ips)
-      (let [signer-ips (net/int-pairs->ipv4 signer-ips)
-            ips (get-in cert [:Details :Ips])
-            ips (net/int-pairs->ipv4 ips)
+    (when (< 0 (count signer-ips))
+      (let [ips (get-in cert [:Details :Ips])
             matches (map #(net/net-match? % signer-ips) ips)
             ip-matches? (some true? matches)]
         (when-not ip-matches?
@@ -116,19 +110,17 @@
   (let [signer-subnets (get-in signer [:Details :Subnets])]
   ;; If the signer has a limited set of subnet ranges to issue from,
   ;; make sure the cert only contains a subset
-    (when (< 0 signer-subnets)
-      (let [signer-subnets (net/int-pairs->ipv4 signer-subnets)
-            subnets (get-in cert [:Details :Subnets])
-            subnets (net/int-pairs->ipv4 subnets)
-            matches (map #(net/net-match? % signer-subnets) subnets)
-            subnet-matches? (some true? matches)]
-        (when-not subnet-matches?
+    (when (< 0 (count signer-subnets))
+      (let [subnets (get-in cert [:Details :Subnets])
+            matches (map #(not (net/net-match? % signer-subnets)) subnets)
+            subnet-not-match? (some true? matches)]
+        (when subnet-not-match?
           (throw (ex-info "certificate contained a subnet assignment outside the limitations of the signing ca"
                           {:subnets (map str subnets)
                            :signer-subnets (map str signer-subnets)})))))
 
     ;; if we reach this point, it matches
-    true))
+    cert))
 
 
 (def NebulaCAPool-spec
@@ -188,8 +180,9 @@
      raw-cert)))
 
 (defmethod pem/unmarshal "NEBULA ED25519 PRIVATE KEY"
-  ([^PemObject pem]
-   (let [raw ()])))
+  [pem]
+  {:curve :curve25519
+   :bytes (pem/get-content pem)})
 
 
 (defn get-ca-for-cert
@@ -269,6 +262,7 @@
 
 (defn CertificateDetails->RawCertificateDetails
   [details]
+  ;; (println "Details are " details)
   (let [{:keys [Name curve IsCA NotAfter NotBefore
                 Subnets Ips Groups
                 ^bytes PublicKey
@@ -277,16 +271,17 @@
         subnets (into [] (net/addresses->ints Subnets))
         not-after (t/instant->unix-timestamp NotAfter)
         not-before (t/instant->unix-timestamp NotBefore)
-        raw-details {:Name Name
-                     :curve curve
-                     :IsCA IsCA
-                     :NotAfter not-after
-                     :NotBefore not-before
-                     :Ips ips
-                     :Subnets subnets
-                     :Issuer Issuer
-                     :Groups Groups
-                     :PublicKey PublicKey}]
+        raw-details (gcert/new-RawNebulaCertificateDetails
+                     {:Name Name
+                      :curve curve
+                      :IsCA IsCA
+                      :NotAfter not-after
+                      :NotBefore not-before
+                      :Ips (vec ips)
+                      :Subnets (vec subnets)
+                      :Issuer (crypto/hex->bytes Issuer)
+                      :Groups (vec Groups)
+                      :PublicKey PublicKey})]
     raw-details))
 
 
@@ -302,8 +297,8 @@
         ;; PublicKey (format-hex PublicKey)
         ;; Signature (format-hex Signature)
         raw-details  (CertificateDetails->RawCertificateDetails Details)]
-    {:Details raw-details
-     :Signature Signature}))
+    (gcert/new-RawNebulaCertificate {:Details raw-details
+                                     :Signature Signature})))
 
 (defn RawCertificate->Certificate4Print
   "Convert a raw nebula cert to a nebula cert.
@@ -323,9 +318,9 @@
         not-before (t/unix-timestamp->instant NotBefore)
         not-before (t/java-instant->iso-str not-before)
         curve (str/upper-case (name curve))
-        Issuer (crypto/format-hex Issuer)
-        PublicKey (crypto/format-hex PublicKey)
-        Signature (crypto/format-hex Signature)
+        Issuer (crypto/bytes->hex Issuer)
+        PublicKey (crypto/bytes->hex PublicKey)
+        Signature (crypto/bytes->hex Signature)
         d {:Name Name
            :curve curve
            :IsCA IsCA
@@ -353,7 +348,7 @@
    - one second before given expiration of not-after
 
    Does not check if now + duration is past not-after."
-  [^Instant now ^Instant not-after ^Duration duration]
+  [^Instant now ^Instant not-after ^Duration duration] 
   (if (t/negative-or-zero-duration? duration)
     (.minusSeconds not-after 1)
     (.plus now duration)))
@@ -449,11 +444,18 @@
   ;; => ("[:message \"Failed to parse subnets: 192.168.0.1/16,2001:db8::2:1/64. 2001:db8::2:1/64 IP address error: IP is not IPv4\"]")
   )
 
+(defn banner->curve
+  [banner]
+  (case banner
+    "NEBULA X25519 PUBLIC KEY" :curve25519
+    (f/fail "Unknown curve %s" banner)))
+
 
 (defn read-pub-key
   [file curve]
   (f/try-all [pub (pem/read-pem! file)
-              _curve_ok? (when (not= (pem/get-type pub) curve)
-                           (f/fail "Curve of %s does not match CA curve:"
-                                   file curve))]
+              pub-key-curve (banner->curve (pem/get-type pub))
+              _curve_ok? (when (not= pub-key-curve curve)
+                           (f/fail "Curve of %s: %s does not match CA curve: %s"
+                                   file pub-key-curve curve))]
              pub))

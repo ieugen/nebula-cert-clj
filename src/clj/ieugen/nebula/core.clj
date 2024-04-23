@@ -127,9 +127,9 @@
   [cert pub-key]
   (let [curve (get-in cert [:Details :Curve])]
     (case curve
-      "CURVE25519"
+      :curve25519
       (verify-signature-ed25519 cert pub-key)
-      "P256"
+      :P256
       (verify-signature-p256 cert pub-key)
       :default  false)))
 
@@ -166,7 +166,7 @@
       (throw (ex-info "Cert expired" {:cert cert})))
     (when-not (check-signature cert signer-pubkey)
       (throw (ex-info "Signature mismatch" {:ca signer
-                                            :public-key (crypto/format-hex signer-pubkey)
+                                            :public-key (crypto/bytes->hex signer-pubkey)
                                             :cert cert})))
     (cert/check-root-constrains cert signer)))
 
@@ -310,12 +310,12 @@
   (-> cert
       :Details
       :Issuer
-      crypto/format-hex)
+      crypto/bytes->hex)
 
   (-> cert
       :Details
       :PublicKey
-      crypto/format-hex)
+      crypto/bytes->hex)
 
   (-> (cert/RawCertificate->Certificate cert))
 
@@ -350,7 +350,7 @@
           pub-key2 ^bytes (-> private-key-params .generatePublicKey .getEncoded)]
       (if (Arrays/equals public-key pub-key2)
         true
-        (f/fail "public key in cert and private key supplied don't match")))))
+        (f/fail "Public key in cert and private key supplied don't match")))))
 
 ^:rct/test
 (comment
@@ -371,7 +371,7 @@
 
   (ed25519-25519-check-private-key my-ed25519-private-key
                                    (crypto/str->bytes "Invalid public key"))
-  ;; => #failjure.core.Failure{:message "public key in cert and private key supplied don't match"}
+  ;; => #failjure.core.Failure{:message "Public key in cert and private key supplied don't match"}
   )
 
 
@@ -391,11 +391,11 @@
    The curve type is given.
    Return the public key bytes on success.
    Return a ^failjure.core.Failure on failure."
-  [^bytes private-key ^String curve]
+  [^bytes private-key curve]
   (f/try-all
    [pub (case curve
-          "X25519" (curve25519-private->public private-key)
-          "P256" (f/fail "P256 curve is not implemented yet")
+          :curve25519 (curve25519-private->public private-key)
+          :P256 (f/fail "P256 curve is not implemented yet")
           (f/fail "Invalid curve %s" curve))]
    pub))
 
@@ -404,55 +404,52 @@
 
   (let [private-key (pem/get-content (pem/read-pem! "sample-certs/ecdh-25519-01.key"))
         pub-key (-> (pem/read-pem! "sample-certs/ecdh-25519-01.pub") pem/get-content)
-        pp-key (private-key->public-key private-key "X25519")]
+        pp-key (private-key->public-key private-key :curve25519)]
     (Arrays/equals pub-key pp-key))
   ;; => true
 
   (private-key->public-key (crypto/str->bytes "") "invalid_curve")
   ;; => #failjure.core.Failure{:message "Invalid curve invalid_curve"}
 
-  (private-key->public-key (crypto/str->bytes "") "P256")
+  (private-key->public-key (crypto/str->bytes "") :P256)
   ;; => #failjure.core.Failure{:message "P256 curve is not implemented yet"}
 
-  (f/message (private-key->public-key (crypto/str->bytes "") "X25519"))
+  (f/message (private-key->public-key (crypto/str->bytes "") :curve25519))
   ;; => "arraycopy: last source index 32 out of bounds for byte[0]"
   )
 
 (defn check-ca-keys-match
   "Check if the keys match for a CA private key and public key pair."
-  [^bytes private-key ^bytes public-key ^String curve]
+  [^bytes private-key ^bytes public-key curve]
   (case curve
-    "curve25519" (ed25519-25519-check-private-key private-key public-key)
-    "P256" (f/fail "P256 curve is not implemented yet")
+    :curve25519 (ed25519-25519-check-private-key private-key public-key)
+    :P256 (f/fail "P256 curve is not implemented yet")
     (f/fail "Invalid curve %s" curve)))
+
 (defn check-non-ca-keys-match
   "Check keys match for non CA private key and public key pair."
-  [^bytes private-key ^bytes public-key ^String curve]
+  [^bytes private-key ^bytes public-key curve]
   (f/try-all [^bytes pub-key (private-key->public-key private-key curve)]
              (if (Arrays/equals pub-key public-key)
                true
-               (f/fail "Public key in cert and private key supplied don't match"))))
+               (f/fail "check-non-ca-keys-match: Public key in cert and private key supplied don't match"))))
 
 (defn verify-private-key
   "Check that the public key in the Nebula certificate and a supplied private key match.
    Return true in case of match.
    Return a ^failjure.core.Failure on failure."
   ;; Port of https://github.com/slackhq/nebula/blob/bbb15f8cb1ecdc7e423ffd1a85a3fc8c0898bf95/cert/cert.go#L694
-  [ca-cert ^String key-curve ^bytes private-key]
+  [ca-cert key-curve ^bytes private-key]
   (let [details (:Details ca-cert)
-        {:keys [Curve IsCa PublicKey]} details
+        {:keys [curve IsCA PublicKey]} details
         private-key-ok true]
-    (f/try-all
-     [_ (when (not= key-curve Curve)
-          (f/fail "Curve in cert: %s and key: %s don't match" Curve key-curve))
-      _ (if IsCa
-          ;; check CA keys
-          (check-ca-keys-match private-key PublicKey key-curve)
-          ;; not CA - chek keys the other way
-          (check-non-ca-keys-match private-key PublicKey key-curve))]
-     ;; keys are ok
-     private-key-ok)))
-
+    (f/try-all [_ (when (not= curve key-curve)
+                    (f/fail "Curve in cert: %s and key: %s don't match" curve key-curve))
+                _ (if IsCA
+                    (check-ca-keys-match private-key PublicKey key-curve)
+                    (check-non-ca-keys-match private-key PublicKey key-curve))]
+               ;; keys are ok
+               private-key-ok)))
 
 
 (defn cert-name [name] (str name ".crt"))
@@ -484,11 +481,12 @@
    Enhance the certificate with the signature.
    
    Return a Failure in case of error."
-  [nebula-cert ^String key-curve ^bytes private-key]
+  [nebula-cert key-curve ^bytes private-key]
   (f/try-all [Details (:Details nebula-cert)
               cert-curve (:curve Details)
-              _curve_ok? (when-not (= key-curve cert-curve)
-                           (f/fail "Curve in cert and private key supplied don't match"))
+              _curve_ok? (when-not (= cert-curve key-curve)
+                           (f/fail "Curve in cert %s and private key supplied don't match %s in %s"
+                                   cert-curve key-curve nebula-cert))
               raw-details (cert/CertificateDetails->RawCertificateDetails Details)
               raw-detail-bytes (cert/marshal-raw-cert-details raw-details)
               signature (crypto/sign cert-curve private-key raw-detail-bytes)]
@@ -498,23 +496,23 @@
   "Sign a user certificate given a path to CA key and cert and some options.
    TODO: Implement passowrd reading and CA key decryption."
   [ca-crt-path ca-key-path name ip opts]
+  ;; (println opts)
   (f/try-all [{:keys [duration groups out-crt out-key subnets in-pub]
                :or {out-key (private-key-name name)
                     out-crt (cert-name name)}} (:flags opts)
               ca-key-pem (pem/read-pem! ca-key-path)
-              ca-key-bytes (pem/get-content ca-key-pem)
-              ca-curve (pem/get-type ca-key-pem)
-              _ (when (= ca-curve "P256")
-                  (f/fail  "P256 curve not implemented."))
+              ca (pem/unmarshal ca-key-pem)
+              ca-curve (:curve ca)
+              ca-key-bytes (:bytes ca)
               ca-cert-pem (pem/read-pem! ca-crt-path)
               raw-ca-cert (cert/pem->RawCertificate ca-cert-pem)
-              ca-cert (cert/RawCertificate->Certificate4Print raw-ca-cert)
+              ca-cert (cert/RawCertificate->Certificate raw-ca-cert)
               not-after (get-in ca-cert [:Details :NotAfter])
               _keys_match (verify-private-key ca-cert ca-curve ca-key-bytes)
               issuer (cert/cert-fingerprint raw-ca-cert)
               now (Instant/now)
               _expired (when (cert/expired-cert? ca-cert now)
-                         (f/fail "ca certificate is expired"))
+                         (f/fail "ca certificate is expired %s: %s" ca-cert now))
               cert-not-after (cert/compute-cert-not-after now not-after duration)
               ip (net/parse-ipv4-cidr ip)
               groups (cert/parse-groups groups)
@@ -534,9 +532,12 @@
               _out-crt (when (file-exists? out-crt)
                          (f/fail "Refusing to overwrite existing cert: %s" out-crt))
               new-cert+signature (sign-cert new-cert ca-curve ca-key-bytes)
-              pem-data (cert/marshal-raw-cert new-cert+signature)
+              new-raw-cert (cert/Certificate->RawCertificate new-cert+signature)
+              pem-data (cert/marshal-raw-cert new-raw-cert)
               pem (PemObject. "NEBULA CERTIFICATE" pem-data)]
-             (pem/write-pem! pem out-crt)))
+             (pem/write-pem! pem out-crt)
+             (f/when-failed [e]
+                            (println (f/message e) e))))
 
 (comment
   

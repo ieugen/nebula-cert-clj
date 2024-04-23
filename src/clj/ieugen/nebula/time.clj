@@ -34,9 +34,10 @@
 (defn expired?
   "Return true if given time is between not-before and not-after"
   [^Instant not-before ^Instant not-after ^Instant time]
-  (and
-   (-> time (.isBefore not-after))
-   (-> time (.isAfter not-before))))
+  (let [in-interval (and
+                     (.isBefore time not-after)
+                     (.isAfter time not-before))]
+    (not in-interval)))
 
 ^:rct/test
 (comment
@@ -45,10 +46,10 @@
   (def before (.minusSeconds base 100))
   (def after (.plusSeconds base 100))
 
-  (expired? before after base) ;; => true
-  (expired? base before after) ;; => false
-  (expired? after before base) ;; => false
-  (expired? after base before) ;; => false
+  (expired? before after base) ;; => false
+  (expired? base before after) ;; => true
+  (expired? after before base) ;; => true
+  (expired? after base before) ;; => true
   )
 
 (defn try-parse-duration
