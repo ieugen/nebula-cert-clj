@@ -3,7 +3,9 @@
          "generated/clj"
          "src/resources"
          "target/generated/classes"]
- :deps {camel-snake-kebab/camel-snake-kebab {:mvn/version "0.4.3"}
+ :deps {babashka/fs {:mvn/version "0.5.20"}
+        babashka/process {:mvn/version "0.5.22"}
+        camel-snake-kebab/camel-snake-kebab {:mvn/version "0.4.3"}
         com.lambdaisland/cli {:mvn/version "0.7.33"}
         com.gfredericks/test.chuck {:mvn/version "0.2.14"}
         com.github.seancfoley/ipaddress {:mvn/version "5.5.0"}
@@ -11,8 +13,11 @@
         failjure/failjure {:mvn/version "2.3.0"}
         io.github.protojure/core {:mvn/version "2.8.2"}
         io.github.protojure/google.protobuf {:mvn/version "2.0.1"}
+        io.github.rwstauner/which-clj {:git/url "https://github.com/rwstauner/which-clj.git"
+                                       :git/sha "5d467f2f8aab844d4508e1066ad6714a0fab8cc6"}
         metosin/jsonista {:mvn/version "0.3.8"}
         metosin/malli {:mvn/version "0.15.0"}
+        org.babashka/http-client {:mvn/version "0.4.16"}
         org.bouncycastle/bcpkix-jdk18on {:mvn/version "1.77"}
         org.bouncycastle/bcprov-jdk18on {:mvn/version "1.77"}
         org.clojure/clojure {:mvn/version "1.11.2"}

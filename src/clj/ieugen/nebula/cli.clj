@@ -8,7 +8,8 @@
 (defn cmd-ca
   "Create a self signed certificate authority"
   [flags]
-  (println flags))
+  (let [{:keys [name]} flags]
+    (core/cli-ca name flags)))
 
 (defn cmd-keygen
   "Create a public/private key pair.

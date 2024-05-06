@@ -1,11 +1,19 @@
 (ns ieugen.nebula.crypto
+  (:require [ieugen.nebula.pem :as pem]
+            [failjure.core :as f]
+            [clojure.java.io :as io]
+            [babashka.fs :as fs])
   (:import (java.nio.charset Charset StandardCharsets)
            (java.security MessageDigest SecureRandom Security)
-           (java.util HexFormat)
+           (javax.crypto Cipher)
+           (javax.crypto.spec SecretKeySpec IvParameterSpec)
+           (java.util Arrays HexFormat)
            (org.bouncycastle.crypto AsymmetricCipherKeyPair)
            (org.bouncycastle.crypto.ec CustomNamedCurves)
-           (org.bouncycastle.crypto.generators ECKeyPairGenerator Ed25519KeyPairGenerator)
+           (org.bouncycastle.crypto.generators Argon2BytesGenerator ECKeyPairGenerator Ed25519KeyPairGenerator)
            (org.bouncycastle.crypto.params
+            Argon2Parameters
+            Argon2Parameters$Builder
             ECDomainParameters
             ECKeyGenerationParameters
             ECPrivateKeyParameters
@@ -16,9 +24,7 @@
            (org.bouncycastle.crypto.util SubjectPublicKeyInfoFactory)
            (org.bouncycastle.jce ECNamedCurveTable)
            (org.bouncycastle.jce.provider BouncyCastleProvider)
-           (org.bouncycastle.math.ec.rfc7748 X25519)) 
-  (:require [ieugen.nebula.pem :as pem]
-            [failjure.core :as f]))
+           (org.bouncycastle.math.ec.rfc7748 X25519)))
 
 (Security/addProvider (BouncyCastleProvider.))
 
@@ -28,6 +34,8 @@
   (Security/getProviders))
 
 (def secure-random-gen (SecureRandom.))
+
+(def default-argon2-nonce-size-bytes 12)
 
 (defn ec-named-curves-seq
   "Return a sequence of EC curves."
@@ -52,10 +60,12 @@
 (def my-hex-fmt ^HexFormat (HexFormat/of))
 
 (defn bytes->hex
+  "Format byte array to hex string"
   [bytes]
   (.formatHex ^HexFormat my-hex-fmt bytes))
 
 (defn hex->bytes
+  "Convert hex string to byte array"
   [hex-str]
   (.parseHex ^HexFormat my-hex-fmt hex-str))
 
@@ -222,4 +232,156 @@
    f/message)
   ;; => "Curve :P256aaa is not supported" 
   
+  )
+
+(defn ->Argon2Parameters
+  [params]
+  (let [{:keys [version memory parallelism iterations salt]} params
+        builder (doto (Argon2Parameters$Builder. Argon2Parameters/ARGON2_id)
+                  (.withVersion version)
+                  (.withMemoryAsKB memory)
+                  (.withParallelism parallelism)
+                  (.withIterations iterations)
+                  (.withSalt salt))
+        argon2 (.build builder)]
+    #_(println "Argon2 " (bean argon2)
+               version memory parallelism iterations
+               (bytes->hex salt))
+    argon2))
+
+(defn- random-salt
+  ([]
+   (random-salt 32))
+  ([size]
+   (let [salt-b (byte-array size)]
+     (.nextBytes secure-random-gen salt-b)
+     salt-b)))
+
+(defn derive-key
+  [passphrase key-size params]
+  (let [p (->Argon2Parameters params)
+        hash (byte-array key-size)
+        gen (Argon2BytesGenerator.)]
+    (.init gen p)
+    (-> gen
+        (.generateBytes (str->bytes passphrase) hash 0 (count hash)))
+    hash))
+
+(defn join-nonce-cipher-text
+  [^bytes nonce ^bytes cipher-text]
+  (let [nonce-size (count nonce)
+        cipher-text-size (count cipher-text)
+        data-size (+ nonce-size cipher-text-size)
+        result (Arrays/copyOf nonce data-size)]
+    (System/arraycopy cipher-text 0 result nonce-size cipher-text-size)
+    result))
+
+(defn split-nonce-cipher-text
+  "Split blob of bytes in two
+   nonce - from begining to nonce-size 
+   cipher-text - from nonce-size to the end"
+  ([^bytes blob]
+   (split-nonce-cipher-text blob 12))
+  ([^bytes blob nonce-size]
+   (let [data-size (count blob)]
+     (if (<= data-size nonce-size)
+       (f/fail "Invalid ciphertext blob - blob shorter than nonce length")
+       [(Arrays/copyOfRange blob 0 nonce-size)
+        (Arrays/copyOfRange blob nonce-size data-size)]))))
+
+^:rct/test
+(comment
+
+  (-> (join-nonce-cipher-text (byte-array [1 2 3 4])
+                              (byte-array [5 6 7]))
+      vec)
+  ;; => [1 2 3 4 5 6 7] 
+
+  (-> (split-nonce-cipher-text
+       (byte-array [-46, 114, -82, 88])
+       16)
+      f/failed?)
+  ;; => true
+
+  (->>
+   (split-nonce-cipher-text
+    (byte-array [-46, 87, -77, -52, 50, 13, 70, 75, -7, -35, 103, -35, 31, 16, 52, 3, -50, -114, -20, 41, 24, 121, -81, 18, 99, 47,
+                 121, 12, 127, 114, -82, 88])
+    16)
+   (map vec))
+  ;; => ([-46 87 -77 -52 50 13 70 75 -7 -35 103 -35 31 16 52 3] 
+  ;; [-50 -114 -20 41 24 121 -81 18 99 47 121 12 127 114 -82 88]) 
+
+  )
+
+(defn aes256-derive-key
+  "Derive an encryption/decryption key from the passphrase"
+  [passphrase params]
+  (let [salt-size 32
+        salt (or (:salt params)
+                 (random-salt salt-size))
+        params (assoc params :salt salt)
+        key-size 32]
+    (derive-key passphrase key-size params)))
+
+(defn aes-256-drecrypt
+  [passphrase argon-params data]
+  (let [key (aes256-derive-key passphrase argon-params)
+        [nonce cipher-txt] (split-nonce-cipher-text data)
+        ;; _ (println 
+        ;;    "Key hex" (bytes->hex key)
+        ;;    "\nNonce hex" (bytes->hex nonce)
+        ;;    "\nCipher hex" (bytes->hex cipher-txt))
+        key-spec (SecretKeySpec. key "AES")
+        iv-param (IvParameterSpec. nonce)
+        cipher (doto (Cipher/getInstance "AES/GCM/NoPadding" "BC")
+                 (.init Cipher/DECRYPT_MODE key-spec iv-param))]
+    (.doFinal cipher cipher-txt)))
+
+(defn aes-256-encrypt
+  ([passphrase argon-params data]
+   (aes-256-encrypt passphrase argon-params data (random-salt default-argon2-nonce-size-bytes)))
+  ([passphrase argon-params data nonce]
+   (let [key (aes256-derive-key passphrase argon-params)
+         key-spec (SecretKeySpec. key "AES")
+         iv-param (IvParameterSpec. nonce)
+         cipher (doto (Cipher/getInstance "AES/GCM/NoPadding" "BC")
+                  (.init Cipher/ENCRYPT_MODE key-spec iv-param))
+         encrypted-data (.doFinal cipher data)]
+     (join-nonce-cipher-text nonce encrypted-data))))
+
+^:rct/test
+(comment
+
+  (def params (->Argon2Parameters {:version 19,
+                                    :memory 2097152,
+                                    :parallelism 4,
+                                    :iterations 1,
+                                    :salt
+                                    (byte-array [-46, 87, -77, -52, 50, 13, 70, 75, -7, -35, 103, -35, 31, 16, 52, 3, -50, -114, -20, 41, 24, 121, -81, 18, 99, 47,
+                                                 121, 12, 127, 114, -82, 88])}))
+
+  (def derived-key (aes256-derive-key "tralala"
+                                      {:version 19,
+                                       :memory 2097152,
+                                       :parallelism 4,
+                                       :iterations 1,
+                                       :salt
+                                       (byte-array [-46, 87, -77, -52, 50, 13, 70, 75, -7, -35, 103, -35, 31, 16, 52, 3, -50, -114, -20, 41, 24, 121, -81, 18, 99, 47,
+                                                    121, 12, 127, 114, -82, 88])}))
+
+  derived-key
+
+  (def raw-key (fs/read-all-bytes "sample-certs/encrypted-ca_raw_key.bytes"))
+
+  (count raw-key) 
+
+  (->
+   raw-key
+   bytes->hex)
+  ;; => "ad2bfaf70cdce33f6645453edecb0fbb7aad010e79a8fe640fcb4dca956a744bba771696ab6d30491cea001ab74fd358a434cd26e44cea981ad51ade37871f75"
+
+
+
+
   )

@@ -626,3 +626,18 @@
 
   (mg/generate #"^x-\w*")
   )
+
+
+(defn cli-ca
+  [name opts])
+
+(comment
+
+
+  (def c (gcert/pb->RawNebulaEncryptedData
+          (pem/read-pem-type! "NEBULA ED25519 ENCRYPTED PRIVATE KEY" "sample-certs/encrypted-ca.key")))
+
+  (count (get-in c [:EncryptionMetadata :Argon2Parameters :salt]))
+  (count (get-in c [:Ciphertext]))
+
+  c)
