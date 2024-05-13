@@ -12,7 +12,8 @@
             [jsonista.core :as j]
             [malli.core :as m]
             [malli.error :as me]
-            [malli.generator :as mg])
+            [malli.generator :as mg]
+            [ieugen.nebula.time :as time])
   (:import (ieugen.nebula.generated.cert Cert$RawNebulaCertificate Cert$RawNebulaCertificateDetails)
            (inet.ipaddr.ipv4 IPv4Address)
            (java.time Instant)
@@ -30,7 +31,7 @@
 (set! *warn-on-reflection* true)
 
 
-(defmethod crypto/write-private :Curve25519
+(defmethod crypto/write-private :curve25519
   [key-pair file & opts]
   (let [key-bytes (:private-key key-pair)
         banner (:Curve25519PrivateKeyBanner crypto/cert-banners)
@@ -44,7 +45,7 @@
         pem (PemObject. banner key-bytes)]
     (pem/write-pem! pem file)))
 
-(defmethod crypto/write-public :Curve25519
+(defmethod crypto/write-public :curve25519
   [key-pair file & {:keys [file-mode] :as _opts}]
   (let [key-bytes (:public-key key-pair)
         banner (:Curve25519PublicKeyBanner crypto/cert-banners)
@@ -208,7 +209,7 @@
   (def privateKey ^Ed25519PrivateKeyParameters (.getPrivate k))
 
   (count (.getEncoded privateKey))
-  (def X25519-kp (crypto/keygen {:key-type :Curve25519}))
+  (def X25519-kp (crypto/keygen {:key-type :curve25519}))
 
   (count (:private-key X25519-kp))
   (count (:public-key X25519-kp))
@@ -510,13 +511,13 @@
               not-after (get-in ca-cert [:Details :NotAfter])
               _keys_match (verify-private-key ca-cert ca-curve ca-key-bytes)
               issuer (cert/cert-fingerprint raw-ca-cert)
-              now (Instant/now)
+              now (time/now)
               _expired (when (cert/expired-cert? ca-cert now)
                          (f/fail "ca certificate is expired %s: %s" ca-cert now))
-              cert-not-after (cert/compute-cert-not-after now not-after duration)
+              cert-not-after (time/compute-cert-not-after now not-after duration)
               ip (net/parse-ipv4-cidr ip)
               groups (cert/parse-groups groups)
-              subnets (cert/parse-subnets subnets)
+              subnets (net/parse-ips-or-subnets subnets)
               cert-pub (cert/read-pub-key in-pub ca-curve)
               new-cert {:Details {:Name name
                                   :Ips [ip]
@@ -627,9 +628,6 @@
   (mg/generate #"^x-\w*")
   )
 
-
-(defn cli-ca
-  [name opts])
 
 (comment
 

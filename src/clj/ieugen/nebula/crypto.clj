@@ -1,15 +1,13 @@
 (ns ieugen.nebula.crypto
-  (:require [ieugen.nebula.pem :as pem]
+  (:require [babashka.fs :as fs]
             [failjure.core :as f]
-            [clojure.java.io :as io]
-            [babashka.fs :as fs])
+            [ieugen.nebula.pem :as pem])
   (:import (java.nio.charset Charset StandardCharsets)
            (java.security MessageDigest SecureRandom Security)
-           (javax.crypto Cipher)
-           (javax.crypto.spec SecretKeySpec IvParameterSpec)
            (java.util Arrays HexFormat)
+           (javax.crypto Cipher)
+           (javax.crypto.spec IvParameterSpec SecretKeySpec)
            (org.bouncycastle.crypto AsymmetricCipherKeyPair)
-           (org.bouncycastle.crypto.ec CustomNamedCurves)
            (org.bouncycastle.crypto.generators Argon2BytesGenerator ECKeyPairGenerator Ed25519KeyPairGenerator)
            (org.bouncycastle.crypto.params
             Argon2Parameters
@@ -46,7 +44,7 @@
   "Return a keyword from curve str or nil."
   [curve]
   (case curve
-    ("25519" "X25519" "Curve25519" "CURVE25519") :Curve25519
+    ("25519" "X25519" "Curve25519" "CURVE25519") :curve25519
     "P256" :P256
     nil))
 
@@ -54,7 +52,7 @@
 (comment
 
   (map curve-str-kw ["25519" "X25519" "Curve25519" "CURVE25519" "P256" "Invalid"])
-  ;; => (:Curve25519 :Curve25519 :Curve25519 :Curve25519 :P256 nil)
+  ;; => (:curve25519 :curve25519 :curve25519 :curve25519 :P256 nil)
 
   (ec-named-curves-seq))
 (def my-hex-fmt ^HexFormat (HexFormat/of))
@@ -126,7 +124,7 @@
      :public-key (.getEncoded public-key)
      :private-key (.getEncoded private-key)}))
 
-(defmethod keygen :Curve25519
+(defmethod keygen :curve25519
   [opts]
   ;; Generate ECDH X25519
   ;;
@@ -314,6 +312,14 @@
 
   )
 
+(defn make-argon-params
+  "Build a map of argon parameters"
+  [iterations memory paralelism]
+  {:version 19,
+   :memory memory,
+   :parallelism paralelism,
+   :iterations iterations})
+
 (defn aes256-derive-key
   "Derive an encryption/decryption key from the passphrase"
   [passphrase params]
@@ -354,12 +360,12 @@
 (comment
 
   (def params (->Argon2Parameters {:version 19,
-                                    :memory 2097152,
-                                    :parallelism 4,
-                                    :iterations 1,
-                                    :salt
-                                    (byte-array [-46, 87, -77, -52, 50, 13, 70, 75, -7, -35, 103, -35, 31, 16, 52, 3, -50, -114, -20, 41, 24, 121, -81, 18, 99, 47,
-                                                 121, 12, 127, 114, -82, 88])}))
+                                   :memory 2097152,
+                                   :parallelism 4,
+                                   :iterations 1,
+                                   :salt
+                                   (byte-array [-46, 87, -77, -52, 50, 13, 70, 75, -7, -35, 103, -35, 31, 16, 52, 3, -50, -114, -20, 41, 24, 121, -81, 18, 99, 47,
+                                                121, 12, 127, 114, -82, 88])}))
 
   (def derived-key (aes256-derive-key "tralala"
                                       {:version 19,
@@ -374,7 +380,7 @@
 
   (def raw-key (fs/read-all-bytes "sample-certs/encrypted-ca_raw_key.bytes"))
 
-  (count raw-key) 
+  (count raw-key)
 
   (->
    raw-key

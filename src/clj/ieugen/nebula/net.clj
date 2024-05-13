@@ -1,6 +1,7 @@
 (ns ieugen.nebula.net
   "Network related functions"
-  (:require [failjure.core :as f])
+  (:require [clojure.string :as str]
+            [failjure.core :as f])
   (:import (inet.ipaddr IPAddress$IPVersion IPAddressString IPAddressStringParameters$Builder)
            (inet.ipaddr.ipv4 IPv4Address)))
 
@@ -270,5 +271,49 @@
   (net-match? (parse-ipv4 "10.10.1.0/24")
               [(parse-ipv4 "10.11.1.0/16")])
   ;; => false
+  )
+
+(defn parse-ips-or-subnets
+  "Parse a string of subnets or ips to a vector of ^IPv4Address .
+   Strings must be valid network addresses: ipv4 addres + network prefix
+   In case of failure returns a failjure.core.Failure "
+  [^String subnets-str]
+  (when-not (str/blank? subnets-str)
+    (let [subnets (str/split subnets-str #",")
+          subnets (map str/trim subnets)
+          subnets (map parse-ipv4-cidr subnets)
+          failed (filter f/failed? subnets)
+          failed? (pos-int? (count failed))]
+      (if failed?
+        (f/fail "Failed to parse subnets: %s. %s" subnets-str
+                (f/message (first failed)))
+        (into [] subnets)))))
+
+^:rct/test
+(comment
+
+  (parse-ips-or-subnets nil)
+  ;; => nil
+
+  (parse-ips-or-subnets "")
+  ;; => nil
+
+  (parse-ips-or-subnets "a")
+  ;; => #failjure.core.Failure{:message "Failed to parse subnets: a. a IP address error: IP is not IPv4"}
+
+  (parse-ips-or-subnets "192.168.0.1")
+  ;; => #failjure.core.Failure{:message "Failed to parse subnets: 192.168.0.1. Not a network address: 192.168.0.1"}
+
+  (parse-ips-or-subnets "192.168.0.1/16,a")
+  ;; => #failjure.core.Failure{:message "Failed to parse subnets: 192.168.0.1/16,a. a IP address error: IP is not IPv4"}
+
+  (->> (parse-ips-or-subnets "   192.168.0.1/16,   192.168.0.1/22    ")
+       (map str))
+
+  ;; => ("192.168.0.1/16" "192.168.0.1/22")
+
+  (->> (parse-ips-or-subnets "192.168.0.1/16,2001:db8::2:1/64")
+       (map str))
+  ;; => ("[:message \"Failed to parse subnets: 192.168.0.1/16,2001:db8::2:1/64. 2001:db8::2:1/64 IP address error: IP is not IPv4\"]")
   )
 

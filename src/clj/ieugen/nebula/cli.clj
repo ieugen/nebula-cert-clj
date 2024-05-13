@@ -1,15 +1,73 @@
 (ns ieugen.nebula.cli
   "A port for nebula-cert command line applcation to clojure."
-  (:require [ieugen.nebula.core :as core]
+  (:require [clojure.string :as str]
+            [failjure.core :as f]
+            [ieugen.nebula.cert :as cert]
+            [ieugen.nebula.core :as core]
+            [ieugen.nebula.net :as net]
             [ieugen.nebula.time :as time]
-            [lambdaisland.cli :as cli]))
+            [lambdaisland.cli :as cli]
+            [ieugen.nebula.crypto :as crypto]
+            [ieugen.nebula.generated.cert :as gcert]))
 
 
 (defn cmd-ca
   "Create a self signed certificate authority"
   [flags]
-  (let [{:keys [name]} flags]
-    (core/cli-ca name flags)))
+  (f/try-all [{:keys [name out-key out-crt duration
+                      groups ips subnets encrypt curve
+                      argon-iterations argon-memory argon-paralelism]} flags
+              name (if (str/blank? name)
+                     (f/fail "CA name is required")
+                     name)
+              out-key (if (str/blank? out-key)
+                        (f/fail "out-key is required")
+                        out-key)
+              out-crt (if (str/blank? out-crt)
+                        (f/fail "out-crt is required")
+                        out-crt)
+              duration (if (time/pos-duration? duration)
+                         duration
+                         (f/fail "a positive duration is required %s" duration))
+              passphrase (when encrypt
+                           (.readPassword (System/console) "Enter pasword: ", (object-array [])))
+              groups (cert/parse-groups groups)
+              ips (net/parse-ips-or-subnets ips)
+              subnets (net/parse-ips-or-subnets subnets)
+              key-pair (crypto/keygen {:key-type :curve25519})
+              {:keys [private-key public-key]} key-pair
+              now (time/now)
+              not-after (time/compute-cert-not-after now duration)
+              nc {:Details {:Name name
+                            :Groups groups
+                            :Ips ips
+                            :Subnets subnets
+                            :NotBefore now
+                            :NotAfter not-after
+                            :PublicKey public-key
+                            :Issuer ""
+                            :curve :curve25519
+                            :IsCA true}}
+              ;; TODO: check files exist
+              nc (core/sign-cert nc :curve25519 private-key)
+              ;; TODO: encrypt key if asked
+              b (if encrypt
+                  (let [pw (String. passphrase)
+                        params (crypto/make-argon-params argon-iterations argon-memory argon-paralelism)]
+                    (crypto/aes-256-encrypt pw params private-key))
+                  private-key)
+              ;; TODO: write private key
+              ;; TODO: write certificate
+              ;; TODO: write qr code
+              ]
+             (println name out-key out-crt duration groups ips subnets (String. passphrase)
+                      nc)
+             (f/when-failed [e]
+                            (println (f/message e) e))))
+(comment
+
+  (cmd-ca {:name ""}))
+
 
 (defn cmd-keygen
   "Create a public/private key pair.
@@ -75,7 +133,7 @@
                               :default "25519"}
             "--duration DURATION" {:doc (str "Optional: amount of time the certificate should be valid for."
                                              "Valid time units are seconds: 's', minutes: 'm', hours: 'h'")
-                                   :default "8760h0m0s"
+                                   :default (time/parse-duration "8760h0m0s")
                                    :parse time/parse-duration}
             "--encrypt" "Optional: prompt for passphrase and write out-key in an encrypted format"
             "--groups STRING" {:doc (str "Optional: comma separated list of groups."
