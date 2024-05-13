@@ -4,11 +4,10 @@
             [failjure.core :as f]
             [ieugen.nebula.cert :as cert]
             [ieugen.nebula.core :as core]
+            [ieugen.nebula.crypto :as crypto]
             [ieugen.nebula.net :as net]
             [ieugen.nebula.time :as time]
-            [lambdaisland.cli :as cli]
-            [ieugen.nebula.crypto :as crypto]
-            [ieugen.nebula.generated.cert :as gcert]))
+            [lambdaisland.cli :as cli]))
 
 
 (defn cmd-ca
