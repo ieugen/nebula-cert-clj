@@ -1,19 +1,20 @@
 (ns ieugen.nebula.cli
   "A port for nebula-cert command line applcation to clojure."
-  (:require [clojure.string :as str]
+  (:require [babashka.fs :as fs]
+            [clojure.string :as str]
             [failjure.core :as f]
             [ieugen.nebula.cert :as cert]
             [ieugen.nebula.core :as core]
             [ieugen.nebula.crypto :as crypto]
             [ieugen.nebula.net :as net]
             [ieugen.nebula.time :as time]
+            [ieugen.nebula.pem :as pem]
             [lambdaisland.cli :as cli]))
-
 
 (defn cmd-ca
   "Create a self signed certificate authority"
   [flags]
-  (f/try-all [{:keys [name out-key out-crt duration
+  (f/try-all [{:keys [name out-key out-crt out-qr duration
                       groups ips subnets encrypt curve
                       argon-iterations argon-memory argon-paralelism]} flags
               name (if (str/blank? name)
@@ -30,10 +31,11 @@
                          (f/fail "a positive duration is required %s" duration))
               passphrase (when encrypt
                            (.readPassword (System/console) "Enter pasword: ", (object-array [])))
+              curve (crypto/curve-str->kw curve)
               groups (cert/parse-groups groups)
               ips (net/parse-ips-or-subnets ips)
               subnets (net/parse-ips-or-subnets subnets)
-              key-pair (crypto/keygen {:key-type :curve25519})
+              key-pair (crypto/keygen {:key-type curve})
               {:keys [private-key public-key]} key-pair
               now (time/now)
               not-after (time/compute-cert-not-after now duration)
@@ -45,22 +47,21 @@
                             :NotAfter not-after
                             :PublicKey public-key
                             :Issuer ""
-                            :curve :curve25519
+                            :curve curve
                             :IsCA true}}
-              ;; TODO: check files exist
-              nc (core/sign-cert nc :curve25519 private-key)
-              ;; TODO: encrypt key if asked
-              b (if encrypt
-                  (let [pw (String. passphrase)
-                        params (crypto/make-argon-params argon-iterations argon-memory argon-paralelism)]
-                    (crypto/aes-256-encrypt pw params private-key))
-                  private-key)
-              ;; TODO: write private key
-              ;; TODO: write certificate
-              ;; TODO: write qr code
-              ]
-             (println name out-key out-crt duration groups ips subnets (String. passphrase)
-                      nc)
+              _out-key-exists? (when (fs/exists? out-key)
+                                 (f/fail "Refusing to overwrite existing CA key: %s" out-key))
+              _out-crt-exists? (when (fs/exists? out-crt)
+                                 (f/fail "Refusing to overwrite existing CA cert: %s" out-crt))
+              nc (core/sign-cert nc curve private-key)
+              key-bytes (if encrypt
+                          (let [pw (String. passphrase)
+                                params (crypto/make-argon-params argon-iterations argon-memory argon-paralelism)]
+                            (cert/encrypt-and-marshal-signing-private-key curve private-key pw params))
+                          (cert/marshal-signing-private-key curve private-key))]
+             (do
+               (pem/write-file out-key key-bytes)
+               (pem/write-file out-crt (cert/marshal-cert nc)))
              (f/when-failed [e]
                             (println (f/message e) e))))
 (comment

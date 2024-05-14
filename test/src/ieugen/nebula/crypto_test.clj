@@ -17,7 +17,7 @@
   (testing "Sign certificate with ed25519"
     (f/try-all  [ca-key (pem/read-pem-type! "NEBULA ED25519 PRIVATE KEY" "sample-certs/sample-ca01.key")
                  cert-bytes (pem/read-pem-type! "NEBULA CERTIFICATE" "sample-certs/sample-cert-01.crt")
-                 raw-cert (cert/bytes-RawCertificate cert-bytes)
+                 raw-cert (cert/bytes->RawCertificate cert-bytes)
                  raw-signature (:Signature raw-cert)
                  raw-details (:Details raw-cert)
                  curve (:curve raw-details)
@@ -34,7 +34,7 @@
   (pem/read-pem-type! "NEBULA ED25519 PRIVATE KEY" "sample-certs/sample-ca01.key")
   (->
    (pem/read-pem-type! "NEBULA CERTIFICATE" "sample-certs/sample-cert-01.crt")
-   (cert/bytes-RawCertificate)))
+   (cert/bytes->RawCertificate)))
 
 
 

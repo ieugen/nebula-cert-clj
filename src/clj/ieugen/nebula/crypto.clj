@@ -1,7 +1,8 @@
 (ns ieugen.nebula.crypto
   (:require [babashka.fs :as fs]
             [failjure.core :as f]
-            [ieugen.nebula.pem :as pem])
+            [ieugen.nebula.pem :as pem]
+            [clojure.string :as str])
   (:import (java.nio.charset Charset StandardCharsets)
            (java.security MessageDigest SecureRandom Security)
            (java.util Arrays HexFormat)
@@ -40,18 +41,18 @@
   []
   (enumeration-seq (ECNamedCurveTable/getNames)))
 
-(defn curve-str-kw
+(defn curve-str->kw
   "Return a keyword from curve str or nil."
   [curve]
-  (case curve
-    ("25519" "X25519" "Curve25519" "CURVE25519") :curve25519
-    "P256" :P256
+  (case (str/lower-case curve)
+    ("25519" "x25519" "curve25519") :curve25519
+    "p256" :P256
     nil))
 
 ^:rct/test
 (comment
 
-  (map curve-str-kw ["25519" "X25519" "Curve25519" "CURVE25519" "P256" "Invalid"])
+  (map curve-str->kw ["25519" "X25519" "Curve25519" "CURVE25519" "P256" "Invalid"])
   ;; => (:curve25519 :curve25519 :curve25519 :curve25519 :P256 nil)
 
   (ec-named-curves-seq))
@@ -92,20 +93,6 @@
   ;; => "c6e2203722c7a16df027a78e6a982bc505a9c92c2ec71a5f8de2d59f877db35a"
   )
 
-;; https://github.com/slackhq/nebula/blob/master/cert/cert.go#L29
-
-(def cert-banners
-  {:CertBanner "NEBULA CERTIFICATE"
-   :Curve25519PrivateKeyBanner "NEBULA X25519 PRIVATE KEY"
-   :Curve25519PublicKeyBanner "NEBULA X25519 PUBLIC KEY"
-   :EncryptedEd25519PrivateKeyBanner "NEBULA ED25519 ENCRYPTED PRIVATE KEY"
-   :Ed25519PrivateKeyBanner "NEBULA ED25519 PRIVATE KEY"
-   :Ed25519PublicKeyBanner "NEBULA ED25519 PUBLIC KEY"
-
-   :P256PrivateKeyBanner "NEBULA P256 PRIVATE KEY"
-   :P256PublicKeyBanner "NEBULA P256 PUBLIC KEY"
-   :EncryptedECDSAP256PrivateKeyBanner "NEBULA ECDSA P256 ENCRYPTED PRIVATE KEY"
-   :ECDSAP256PrivateKeyBanner "NEBULA ECDSA P256 PRIVATE KEY"})
 
 (defmulti keygen
   "Implement keygeneration for supported key-pair types.
@@ -314,20 +301,17 @@
 
 (defn make-argon-params
   "Build a map of argon parameters"
-  [iterations memory paralelism]
-  {:version 19,
-   :memory memory,
-   :parallelism paralelism,
-   :iterations iterations})
+  ([iterations memory paralelism]
+   {:version 19,
+    :memory memory
+    :parallelism paralelism
+    :iterations iterations
+    :salt (random-salt 32)}))
 
 (defn aes256-derive-key
   "Derive an encryption/decryption key from the passphrase"
   [passphrase params]
-  (let [salt-size 32
-        salt (or (:salt params)
-                 (random-salt salt-size))
-        params (assoc params :salt salt)
-        key-size 32]
+  (let [key-size 32]
     (derive-key passphrase key-size params)))
 
 (defn aes-256-drecrypt

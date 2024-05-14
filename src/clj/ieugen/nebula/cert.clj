@@ -11,9 +11,26 @@
             [malli.core :as m]
             [malli.error :as me]
             [protojure.protobuf :as protojure])
-  (:import (ieugen.nebula.generated.cert Cert$RawNebulaCertificate Cert$RawNebulaCertificateDetails)
-           (java.time Instant Duration)
+  (:import (ieugen.nebula.generated.cert Cert$RawNebulaCertificate 
+                                         Cert$RawNebulaCertificateDetails
+                                         Cert$RawNebulaEncryptedData)
+           (java.time Instant)
            (org.bouncycastle.util.io.pem PemObject)))
+
+;; https://github.com/slackhq/nebula/blob/master/cert/cert.go#L29
+
+(def cert-banners
+  {:CertBanner "NEBULA CERTIFICATE"
+   :Curve25519PrivateKeyBanner "NEBULA X25519 PRIVATE KEY"
+   :Curve25519PublicKeyBanner "NEBULA X25519 PUBLIC KEY"
+   :EncryptedEd25519PrivateKeyBanner "NEBULA ED25519 ENCRYPTED PRIVATE KEY"
+   :Ed25519PrivateKeyBanner "NEBULA ED25519 PRIVATE KEY"
+   :Ed25519PublicKeyBanner "NEBULA ED25519 PUBLIC KEY"
+
+   :P256PrivateKeyBanner "NEBULA P256 PRIVATE KEY"
+   :P256PublicKeyBanner "NEBULA P256 PUBLIC KEY"
+   :EncryptedECDSAP256PrivateKeyBanner "NEBULA ECDSA P256 ENCRYPTED PRIVATE KEY"
+   :ECDSAP256PrivateKeyBanner "NEBULA ECDSA P256 PRIVATE KEY"})
 
 (defn marshal-raw-cert
   "Convert protojure a RawNebulaCertificate map to bytes.
@@ -216,7 +233,7 @@
   [^PemObject pem]
   (gcert/pb->RawNebulaCertificate (pem/get-content pem)))
 
-(defn bytes-RawCertificate
+(defn bytes->RawCertificate
   [^bytes cert]
   (gcert/pb->RawNebulaCertificate cert))
 
@@ -339,8 +356,46 @@
   "Marshal a cert to bytes.
    Will convert cert -> raw cert"
   [cert]
-  (let [raw-cert (Certificate->RawCertificate cert)]
-    (marshal-raw-cert raw-cert)))
+  (let [raw-cert (Certificate->RawCertificate cert)
+        cert-bytes (marshal-raw-cert raw-cert)]
+    (pem/encode-to-bytes (:CertBanner cert-banners) cert-bytes)))
+
+(defn marshal-signing-private-key
+  "Marshal key bytes as a PEM file for 25519 and p256 curve.
+   For other curve types, return nil"
+  [curve key-bytes]
+  (case curve
+    :curve25519 (pem/encode-to-bytes (:Ed25519PrivateKeyBanner cert-banners) key-bytes)
+    :p256 (pem/encode-to-bytes (:ECDSAP256PrivateKeyBanner cert-banners) key-bytes)
+    nil))
+
+(defn marshal-raw-encrypted-data
+  "Convert protojure a RawNebulaEncryptedData map to bytes.
+  Uses double serializations since protojure has a serialization bug with
+  https://github.com/protojure/lib/issues/164
+  Once it's fixed we can use only protojure."
+  [rned]
+  (let [d-bytes ^bytes (protojure/->pb rned)
+        cert2 (Cert$RawNebulaEncryptedData/parseFrom d-bytes)
+        d-bytes2 (.toByteArray cert2)]
+    d-bytes2))
+
+(defn encrypt-and-marshal-signing-private-key
+  "Encrypt a private key and marshal bytes as a PEM file for 25519 and p256 curve.
+   For other curve types, return nil"
+  [curve key-bytes passphrase argon-params]
+  (println argon-params)
+  (let [ciphertext (crypto/aes-256-encrypt passphrase argon-params key-bytes)
+        rneb (gcert/map->RawNebulaEncryptedData-record
+              {:EncryptionMetadata (gcert/->RawNebulaEncryptionMetadata-record
+                                    "AES-256-GCM"
+                                    (gcert/map->RawNebulaArgon2Parameters-record argon-params))
+               :Ciphertext ciphertext})
+        rnedb-bytes (marshal-raw-encrypted-data rneb)]
+    (case curve
+      :curve25519 (pem/encode-to-bytes (:EncryptedEd25519PrivateKeyBanner cert-banners) rnedb-bytes)
+      :p256 (pem/encode-to-bytes (:EncryptedECDSAP256PrivateKeyBanner cert-banners) rnedb-bytes)
+      nil)))
 
 (defn parse-groups
   "Parse string of group names separated by colon , .

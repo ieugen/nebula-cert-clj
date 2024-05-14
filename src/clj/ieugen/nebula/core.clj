@@ -12,13 +12,10 @@
             [jsonista.core :as j]
             [malli.core :as m]
             [malli.error :as me]
-            [malli.generator :as mg]
-            [ieugen.nebula.time :as time])
+            [malli.generator :as mg])
   (:import (ieugen.nebula.generated.cert Cert$RawNebulaCertificate Cert$RawNebulaCertificateDetails)
            (inet.ipaddr.ipv4 IPv4Address)
-           (java.time Instant)
            (java.util Arrays)
-           (org.bouncycastle.crypto Signer)
            (org.bouncycastle.crypto AsymmetricCipherKeyPair)
            (org.bouncycastle.crypto.ec CustomNamedCurves)
            (org.bouncycastle.crypto.generators Ed25519KeyPairGenerator)
@@ -34,28 +31,28 @@
 (defmethod crypto/write-private :curve25519
   [key-pair file & opts]
   (let [key-bytes (:private-key key-pair)
-        banner (:Curve25519PrivateKeyBanner crypto/cert-banners)
+        banner (:Curve25519PrivateKeyBanner cert/cert-banners)
         pem (PemObject. banner key-bytes)]
     (pem/write-pem! pem file)))
 
 (defmethod crypto/write-private :P256
   [key-pair file & opts]
   (let [key-bytes (:private-key key-pair)
-        banner (:P256PrivateKeyBanner crypto/cert-banners)
+        banner (:P256PrivateKeyBanner cert/cert-banners)
         pem (PemObject. banner key-bytes)]
     (pem/write-pem! pem file)))
 
 (defmethod crypto/write-public :curve25519
   [key-pair file & {:keys [file-mode] :as _opts}]
   (let [key-bytes (:public-key key-pair)
-        banner (:Curve25519PublicKeyBanner crypto/cert-banners)
+        banner (:Curve25519PublicKeyBanner cert/cert-banners)
         pem (PemObject. banner key-bytes)]
     (pem/write-pem! pem file)))
 
 (defmethod crypto/write-public :P256
   [key-pair file & {:keys [file-mode] :as _opts}]
   (let [key-bytes (:public-key key-pair)
-        banner (:P256PublicKeyBanner crypto/cert-banners)
+        banner (:P256PublicKeyBanner cert/cert-banners)
         pem (PemObject. banner key-bytes)]
     (pem/write-pem! pem file)))
 
@@ -329,7 +326,7 @@
 (defn cli-keygen
   "CLI command - generate nebula keys."
   [curve out-key out-pub & _opts]
-  (let [curve (crypto/curve-str-kw curve)
+  (let [curve (crypto/curve-str->kw curve)
         key-pair (crypto/keygen {:key-type curve})]
     (crypto/write-private key-pair out-key)
     (crypto/write-public key-pair out-pub)))
@@ -511,10 +508,10 @@
               not-after (get-in ca-cert [:Details :NotAfter])
               _keys_match (verify-private-key ca-cert ca-curve ca-key-bytes)
               issuer (cert/cert-fingerprint raw-ca-cert)
-              now (time/now)
+              now (t/now)
               _expired (when (cert/expired-cert? ca-cert now)
                          (f/fail "ca certificate is expired %s: %s" ca-cert now))
-              cert-not-after (time/compute-cert-not-after now not-after duration)
+              cert-not-after (t/compute-cert-not-after now not-after duration)
               ip (net/parse-ipv4-cidr ip)
               groups (cert/parse-groups groups)
               subnets (net/parse-ips-or-subnets subnets)

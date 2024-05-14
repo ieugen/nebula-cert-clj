@@ -1,9 +1,11 @@
 (ns ieugen.nebula.pem
   "Protocol and utilities for working with PEM files and data."
-  (:require [clojure.java.io :as io]
+  (:require [babashka.fs :as fs]
+            [clojure.java.io :as io] 
             [failjure.core :as f])
-  (:import
-   (org.bouncycastle.util.io.pem PemObject PemReader PemWriter)))
+  (:import (java.io StringWriter)
+           (java.nio.charset StandardCharsets)
+           (org.bouncycastle.util.io.pem PemObject PemReader PemWriter)))
 
 ;; TODO: @ieugen: Use byte array or InutStream as
 
@@ -49,6 +51,15 @@
   (count (read-pems! "sample-certs/multiple-ca.crt")) ;;=> 2
   )
 
+(defn write-file
+  "Write data to a file using the given permissions.
+   Permissions are of form 'rwx------' 
+   Default permissions are 0600 or 'rw-------' "
+  ([path data]
+   (write-file path data "rw-------"))
+  ([path data permissions]
+   (fs/create-file path {:posix-file-permissions permissions})
+   (fs/write-bytes path data)))
 
 (defn read-pem-type!
   "Return the bytes for a PEM file if it has the given type.
@@ -71,3 +82,25 @@
 (defmulti unmarshal
   "Unmarshal content from a type implementing ^PemProtocol"
   (fn [pem] (get-type pem)))
+
+
+(defn encode-to-bytes
+  "Encode data as PEM bytes."
+  [type bytes]
+  (let [pem (PemObject. type bytes)
+        s (StringWriter.)]
+    (with-open [pw (PemWriter. s)]
+      (.writeObject pw pem))
+    (.getBytes (.toString s) StandardCharsets/UTF_8)))
+
+
+^:rct/test
+(comment
+
+  (->
+   (encode-to-bytes "Test PEM" (.getBytes "my-data" StandardCharsets/UTF_8))
+   (String.))
+  ;; => "-----BEGIN Test PEM-----\nbXktZGF0YQ==\n-----END Test PEM-----\n"
+  
+
+  )
